@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "starter",
+  "title": "Starter dashboard",
+  "mode": "dashboard",
+  "theme": { "accent": "#b7f34a", "density": "compact" },
+  "widgets": [
+    { "id": "visitors", "type": "metric", "title": "Visitors", "value": "12,480", "detail": "+9% this week", "accent": "lime", "grid": { "colSpan": 4 } },
+    { "id": "links", "type": "links", "title": "Useful links", "items": [{ "label": "GitHub", "url": "https://github.com" }], "grid": { "colSpan": 4 } },
+    { "id": "welcome", "type": "html", "title": "Welcome", "html": "<strong>Hello.</strong><p>Edit this block with trusted HTML.</p>", "grid": { "colSpan": 4 } }
+  ],
+  "revision": 0
+}

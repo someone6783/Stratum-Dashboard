@@ -1,0 +1,19 @@
+services:
+  stratum:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      DATA_DIR: /data
+      EMBED_ORIGINS: ${EMBED_ORIGINS:-https://example.com}
+    volumes:
+      - stratum-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8787/api/health"]
+      interval: 20s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  stratum-data:
