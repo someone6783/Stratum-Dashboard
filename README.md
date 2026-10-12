@@ -184,6 +184,8 @@ Open `#weather` in the workspace or select **Weather** in the sidebar. The bundl
 
 The browser retrieves current, hourly, and seven-day forecast data directly from [Open-Meteo](https://open-meteo.com/en/docs). Location search uses its [Geocoding API](https://open-meteo.com/en/docs/geocoding-api). Neither endpoint needs an API key for the default public use case.
 
+Alongside the hourly strip and seven-day outlook, the view plots a 24-hour temperature chart comparing air and apparent temperature, a precipitation-probability chart, a wind-speed chart, and a daily high/low range chart with rainfall bars. Current conditions add surface pressure, today's high and low, and the wind bearing as a compass point, while the outlook column reports daily rainfall totals alongside the chance of rain. The published fast view renders the same additional figures and range and rainfall charts without the React runtime.
+
 ## API
 
 | Method | Route | Description |
