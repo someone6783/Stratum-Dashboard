@@ -24,11 +24,31 @@ Stratum is a compact dashboard workspace with two faces: a visual editor for cha
 
 ### Docker
 
+The published image lives in GitHub Container Registry at `ghcr.io/someone6783/stratum-dashboard`. The package is private, so authenticate once on the host with a fine-grained or classic PAT that has the `read:packages` scope:
+
 ```bash
-docker compose up --build
+docker login ghcr.io -u someone6783 --password-stdin < your-token
+docker compose up -d
 ```
 
-Open `http://localhost:8787`. Dashboard data is stored in the named `stratum-data` volume.
+Open `http://localhost:8787`. Dashboard data is stored in the named `stratum-data` volume, which `docker compose down -v` deletes.
+
+Tags:
+
+| Tag | Meaning |
+| --- | --- |
+| `latest` | Newest build pushed from `master` |
+| `ebc76de` | Immutable tag for one commit, matching the short SHA |
+
+Pin a commit tag rather than `latest` when a deployment should stay on a known build. Images are built for `linux/amd64` only.
+
+To build locally instead, use `docker build -t stratum .` and swap `image:` for `build: .` in the compose file.
+
+### Docker Compose
+
+[`docker-compose.yml`](docker-compose.yml) is the deployment template and is what a TrueNAS SCALE Apps custom-compose entry needs. It declares the registry image, the `8787` host port, the datasource variables, the data volume, and a health check. No secrets belong in the file: point `PROMETHEUS_URL` and `PROMETHEUS_TOKEN` at environment variables supplied by the platform.
+
+On TrueNAS, authenticate the registry before deploying, through **Apps → Settings → Docker Hub/Registry** or by running `docker login ghcr.io` on the host, then paste the compose file into the custom app entry. The image also carries a `HEALTHCHECK`, so the app reports healthy on its own even when the platform does not supply one.
 
 ### Local development
 
@@ -37,7 +57,7 @@ npm install
 PROMETHEUS_URL=http://prometheus.example.com:9090 npm run dev
 ```
 
-The workspace opens at `http://localhost:5173`; Vite forwards API and published-view requests to the backend on port `8787`. The bottom of the sidebar shows the date and short SHA of the newest commit, read from `GET /api/release`. That route shells out to `git`, so it reports no release when the checkout has no `.git` directory, as in the production image.
+The workspace opens at `http://localhost:5173`; Vite forwards API and published-view requests to the backend on port `8787`. The bottom of the sidebar shows the date and short SHA of the newest commit, read from `GET /api/release`. That route shells out to `git`, so it reports no release when the checkout has no `.git` directory, as in the production image, and the sidebar then omits the stamp.
 
 ## Prometheus metrics
 
@@ -226,6 +246,16 @@ npm run dev     # frontend + API with live reload
 npm run build   # type-check and compile the frontend
 npm test        # contract, proxy, formatting, and component tests
 npm start       # serve the production build and API
+```
+
+To publish a new image, build and push the commit tag alongside `latest`:
+
+```bash
+docker build --build-arg GIT_REVISION=$(git rev-parse --short HEAD) \
+  -t ghcr.io/someone6783/stratum-dashboard:latest \
+  -t ghcr.io/someone6783/stratum-dashboard:$(git rev-parse --short HEAD) .
+docker push ghcr.io/someone6783/stratum-dashboard:latest
+docker push ghcr.io/someone6783/stratum-dashboard:$(git rev-parse --short HEAD)
 ```
 
 ## Project map

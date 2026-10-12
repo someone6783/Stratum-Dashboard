@@ -1,6 +1,16 @@
+# Stratum Dashboard
+#
+# Pulls the published image from GitHub Container Registry. The package is
+# private, so authenticate on the host once before starting:
+#
+#   docker login ghcr.io -u someone6783 --password-stdin   # password: a PAT with read:packages
+#
+# Pin to a release tag such as `ebc76de` or a semver tag instead of `latest`
+# to keep a deployment pinned to a known build.
 services:
   stratum:
-    build: .
+    image: ghcr.io/someone6783/stratum-dashboard:latest
+    pull_policy: always
     ports:
       - "8787:8787"
     environment:
