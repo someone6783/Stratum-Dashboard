@@ -30,8 +30,21 @@ const embedWidget = z.object({
   id: z.string().min(1), type: z.literal("embed"), title: z.string(), url: z.string().url(),
   height: z.number().int().min(160).max(1200).default(360), grid: gridSchema.default({ colSpan: 12 })
 });
+const durationField = z.string().regex(/^\d+(\.\d+)?[smhdwy]$/, "Use a Prometheus duration such as 30s, 6h or 2d");
+const prometheusWidget = z.object({
+  id: z.string().min(1), type: z.literal("prometheus"), title: z.string().min(1).max(80),
+  query: z.string().min(1).max(2000), format: z.enum(["metric", "chart", "table", "targets"]).default("metric"),
+  unit: z.enum(["number", "bytes", "percent", "seconds", "duration", "text"]).default("number"),
+  detail: z.string().max(160).optional(), accent: z.enum(["lime", "violet", "blue"]).default("lime").optional(),
+  range: durationField.default("6h"), step: durationField.default("1m"),
+  refreshMs: z.number().int().min(5000).max(3600000).optional(),
+  labels: z.array(z.string().min(1).max(40)).max(8).optional(),
+  grid: gridSchema.default({ colSpan: 3 })
+});
 
-export const widgetSchema = z.discriminatedUnion("type", [metricWidget, statusWidget, chartWidget, linksWidget, htmlWidget, embedWidget]);
+export const widgetSchema = z.discriminatedUnion("type", [metricWidget, statusWidget, chartWidget, linksWidget, htmlWidget, embedWidget, prometheusWidget]);
+
+export type PrometheusWidget = z.infer<typeof prometheusWidget>;
 
 export const dashboardSchema = z.object({
   schemaVersion: z.literal(1),
@@ -58,16 +71,23 @@ export const dashboardSchema = z.object({
 export type Dashboard = z.infer<typeof dashboardSchema>;
 export type Widget = z.infer<typeof widgetSchema>;
 
+/** Generic example dashboard. Uses only standard Prometheus/client metrics so it runs on any datasource. */
 export const defaultDashboard: Dashboard = {
-  schemaVersion: 1, id: "overview", title: "Overview", description: "Operations at a glance", mode: "dashboard",
+  schemaVersion: 1, id: "overview", title: "Overview", description: "Live Prometheus metrics for every monitored target", mode: "dashboard",
   theme: { accent: "#b7f34a", density: "compact" }, revision: 0,
   widgets: [
-    { id: "sessions", type: "metric", title: "Active sessions", value: "2,847", detail: "+18.2% from last week", accent: "lime", trend: [25,42,36,61,56,82,72,94], grid: { colSpan: 3 } },
-    { id: "response", type: "metric", title: "Avg. response", value: "186ms", detail: "24ms faster than target", accent: "violet", trend: [58,62,55,71,68,79,84,91], grid: { colSpan: 3 } },
-    { id: "systems", type: "status", title: "System status", items: [{name:"Edge network",status:"Operational",value:"99.99%"},{name:"API cluster",status:"Operational",value:"99.97%"},{name:"Database",status:"Operational",value:"99.95%"}], grid: { colSpan: 6 } },
-    { id: "requests", type: "chart", title: "Request volume", value: "1.24M", detail: "requests this month", labels: ["Nov","Jan","Mar","May","Jul","Sep"], values: [34,48,42,62,55,78,72,88,83,96,91,108], grid: { colSpan: 8 } },
-    { id: "quick-links", type: "links", title: "Quick links", items: [{label:"GitHub",url:"https://github.com",hint:"github.com"},{label:"Cloudflare",url:"https://dash.cloudflare.com",hint:"dash.cloudflare.com"},{label:"Grafana",url:"https://grafana.com",hint:"metrics"},{label:"Linear",url:"https://linear.app",hint:"issues"}], grid: { colSpan: 4 } },
-    { id: "note", type: "html", title: "Team note", html: "<strong>Release window</strong><p>Production rollout begins Friday at 14:00 UTC. All checks are currently green.</p>", grid: { colSpan: 12 } }
+    { id: "targets-up", type: "prometheus", title: "Targets up", query: "sum(up)", format: "metric", unit: "number", detail: "scraping without error", accent: "lime", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "scrape-health", type: "prometheus", title: "Scrape health", query: "100 * avg(up)", format: "metric", unit: "percent", detail: "of configured targets", accent: "lime", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "query-rate", type: "prometheus", title: "Query rate", query: "sum(rate(prometheus_engine_query_duration_seconds_count[5m]))", format: "metric", unit: "number", detail: "queries per second", accent: "violet", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "tsdb-size", type: "prometheus", title: "TSDB on disk", query: "prometheus_tsdb_storage_blocks_bytes", format: "metric", unit: "bytes", detail: "persisted blocks", accent: "blue", range: "6h", step: "5m", grid: { colSpan: 3 } },
+    { id: "query-latency", type: "prometheus", title: "Query latency p50 by slice", query: "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}", format: "chart", unit: "seconds", detail: "per evaluation phase", labels: ["slice"], range: "6h", step: "1m", grid: { colSpan: 8 } },
+    { id: "active-series", type: "prometheus", title: "Active series", query: "prometheus_tsdb_head_series", format: "metric", unit: "number", detail: "in the TSDB head", accent: "violet", range: "6h", step: "5m", grid: { colSpan: 4 } },
+    { id: "target-list", type: "prometheus", title: "Target health", query: "up", format: "targets", unit: "number", labels: ["job", "instance"], range: "5m", step: "1m", grid: { colSpan: 4 } },
+    { id: "job-memory", type: "prometheus", title: "Memory by job", query: "avg by (job) (process_resident_memory_bytes)", format: "table", unit: "bytes", labels: ["job"], range: "5m", step: "1m", grid: { colSpan: 4 } },
+    { id: "job-cpu", type: "prometheus", title: "CPU by job", query: "sum by (job) (rate(process_cpu_seconds_total[5m]))", format: "table", unit: "number", detail: "cores in use", labels: ["job"], range: "5m", step: "1m", grid: { colSpan: 4 } },
+    { id: "samples", type: "prometheus", title: "Samples ingested", query: "sum(rate(prometheus_engine_query_samples_total[5m]))", format: "chart", unit: "number", detail: "samples per second", range: "6h", step: "1m", grid: { colSpan: 8 } },
+    { id: "http-rate", type: "prometheus", title: "HTTP request rate", query: "sum(rate(prometheus_http_requests_total[5m]))", format: "metric", unit: "number", detail: "requests per second", accent: "blue", range: "6h", step: "1m", grid: { colSpan: 4 } },
+    { id: "note", type: "html", title: "Team note", html: "<strong>Prometheus-backed panels</strong><p>Every panel above is a PromQL query proxied by the Stratum API. Query endpoints and credentials stay in the server environment, never in the dashboard JSON.</p>", grid: { colSpan: 12 } }
   ]
 };
 

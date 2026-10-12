@@ -6,6 +6,9 @@ services:
     environment:
       DATA_DIR: /data
       EMBED_ORIGINS: ${EMBED_ORIGINS:-https://example.com}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-}
+      PROMETHEUS_TOKEN: ${PROMETHEUS_TOKEN:-}
+      PROMETHEUS_CACHE_TTL_MS: ${PROMETHEUS_CACHE_TTL_MS:-10000}
     volumes:
       - stratum-data:/data
     restart: unless-stopped

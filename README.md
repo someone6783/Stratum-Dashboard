@@ -34,10 +34,64 @@ Open `http://localhost:8787`. Dashboard data is stored in the named `stratum-dat
 
 ```bash
 npm install
-npm run dev
+PROMETHEUS_URL=http://prometheus.example.com:9090 npm run dev
 ```
 
 The workspace opens at `http://localhost:5173`; Vite forwards API and published-view requests to the backend on port `8787`.
+
+## Prometheus metrics
+
+The bundled **Overview** dashboard is Prometheus-backed: eleven panels of live PromQL built from the standard `prometheus_*` and `process_*` metrics, so it renders against any Prometheus datasource. Add your own queries by editing the dashboard JSON.
+
+Point Stratum at a datasource with `PROMETHEUS_URL`. Everything else is optional:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PROMETHEUS_URL` | unset | Prometheus base URL, for example `http://prometheus.example.com:9090` |
+| `PROMETHEUS_TOKEN` | unset | Bearer token sent to Prometheus, never returned to the browser |
+| `PROMETHEUS_CACHE_TTL_MS` | `10000` | Collapses identical panel queries into one upstream call |
+
+```bash
+PROMETHEUS_URL=http://prometheus.example.com:9090 npm run dev
+```
+
+or in `.env` for Docker Compose:
+
+```bash
+PROMETHEUS_URL=http://prometheus.example.com:9090 docker compose up --build
+```
+
+Without `PROMETHEUS_URL` the panels stay visible and explain that the datasource is unconfigured, instead of failing the page.
+
+Add a panel through the dashboard JSON:
+
+```json
+{
+  "id": "disk-free",
+  "type": "prometheus",
+  "title": "Filesystem free",
+  "query": "100 * (1 - node_filesystem_avail_bytes / node_filesystem_size_bytes)",
+  "format": "metric",
+  "unit": "percent",
+  "detail": "root volume utilisation",
+  "range": "6h",
+  "step": "5m",
+  "grid": { "colSpan": 3 }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `query` | Any PromQL expression, including ranges such as `[5m]` |
+| `format` | `metric`, `chart`, `table`, or `targets` |
+| `unit` | `number`, `bytes`, `percent`, `seconds`, `duration`, or `text` |
+| `range` / `step` | Prometheus durations like `6h` and `1m`; capped at 30d and 15s |
+| `refreshMs` | Client refresh interval, default 30000, minimum 5000 |
+| `labels` | Label keys used for table rows, target names, and chart legends |
+
+`format: "targets"` treats the value as scrape health, which suits `up`. Charts render one line per series, up to six, and expose a 1h/6h/24h/7d range selector. Panels pause polling while the browser tab is hidden and refresh as soon as it becomes visible again.
+
+Panels query through `GET /api/prometheus/query` rather than talking to Prometheus from the browser, so the datasource URL, CORS rules, and credentials stay on the server. Queries are length-limited, checked against a conservative PromQL character set, and served from a short-lived cache.
 
 ## Dashboard JSON
 
@@ -77,6 +131,7 @@ A complete importable definition is available in [`examples/overview.json`](exam
 | `links` | Bookmarks and shortcuts | `items[]` |
 | `html` | Sanitized internal markup | `html` |
 | `embed` | Sandboxed external page | `url`, `height` |
+| `prometheus` | Live PromQL metric, chart, table, or target list | `query`, `format`, `unit` |
 
 Use `grid.colSpan` from 1–12 to size a widget. On small screens, cards stack automatically. Change `theme.accent` to any six-digit hex color.
 
@@ -119,6 +174,8 @@ The browser retrieves current, hourly, and seven-day forecast data directly from
 | `POST` | `/api/dashboards/import` | Validate and import a definition |
 | `GET` | `/api/dashboards/:id/export` | Download a definition |
 | `DELETE` | `/api/dashboards/:id` | Delete a dashboard |
+| `GET` | `/api/config` | Embed origins and datasource status |
+| `GET` | `/api/prometheus/query` | Proxied PromQL range query |
 | `GET` | `/published/:id` | Render the fast HTML view |
 
 Saves are written to a temporary file and renamed into place so a partial write cannot replace the dashboard store. Each successful save increments `revision` and records `updatedAt`.
@@ -133,6 +190,7 @@ Set `mode` to `search` and provide a `search` object. Supported providers are `g
 - Internal HTML is sanitized in the browser and again when published.
 - External pages run inside a restricted iframe sandbox.
 - `EMBED_ORIGINS` controls which exact origins may appear in published pages. Keep the default restrictive in public deployments.
+- The Prometheus endpoint and any bearer token live in the server environment. Neither is written into dashboard JSON, exports, or API responses, and the browser only ever sees the proxied results.
 - Dashboard definitions are data. They are never evaluated as JavaScript.
 
 Stratum currently assumes a trusted single-user or private-network deployment. Add authentication at the reverse proxy before exposing editor or API routes publicly.
@@ -142,16 +200,16 @@ Stratum currently assumes a trusted single-user or private-network deployment. A
 ```bash
 npm run dev     # frontend + API with live reload
 npm run build   # type-check and compile the frontend
-npm test        # contract tests
+npm test        # contract, proxy, formatting, and component tests
 npm start       # serve the production build and API
 ```
 
 ## Project map
 
 ```text
-src/                 React workspace and lazy editor
-server/              persistence API and published HTML renderer
-shared/              versioned dashboard contract and seed data
+src/                 React workspace, lazy editor, and PromQL panels
+server/              persistence API, Prometheus proxy, and published HTML renderer
+shared/              versioned dashboard contract, Prometheus helpers, and seed data
 examples/            importable dashboard definitions
 data/                runtime store (ignored by Git)
 Dockerfile            production image

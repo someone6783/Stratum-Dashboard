@@ -1,13 +1,194 @@
 {
   "schemaVersion": 1,
-  "id": "starter",
-  "title": "Starter dashboard",
+  "id": "overview",
+  "title": "Overview",
+  "description": "Live Prometheus metrics for every monitored target",
   "mode": "dashboard",
-  "theme": { "accent": "#b7f34a", "density": "compact" },
+  "theme": {
+    "accent": "#b7f34a",
+    "density": "compact"
+  },
+  "revision": 0,
   "widgets": [
-    { "id": "visitors", "type": "metric", "title": "Visitors", "value": "12,480", "detail": "+9% this week", "accent": "lime", "grid": { "colSpan": 4 } },
-    { "id": "links", "type": "links", "title": "Useful links", "items": [{ "label": "GitHub", "url": "https://github.com" }], "grid": { "colSpan": 4 } },
-    { "id": "welcome", "type": "html", "title": "Welcome", "html": "<strong>Hello.</strong><p>Edit this block with trusted HTML.</p>", "grid": { "colSpan": 4 } }
-  ],
-  "revision": 0
+    {
+      "id": "targets-up",
+      "type": "prometheus",
+      "title": "Targets up",
+      "query": "sum(up)",
+      "format": "metric",
+      "unit": "number",
+      "detail": "scraping without error",
+      "accent": "lime",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "scrape-health",
+      "type": "prometheus",
+      "title": "Scrape health",
+      "query": "100 * avg(up)",
+      "format": "metric",
+      "unit": "percent",
+      "detail": "of configured targets",
+      "accent": "lime",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "query-rate",
+      "type": "prometheus",
+      "title": "Query rate",
+      "query": "sum(rate(prometheus_engine_query_duration_seconds_count[5m]))",
+      "format": "metric",
+      "unit": "number",
+      "detail": "queries per second",
+      "accent": "violet",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "tsdb-size",
+      "type": "prometheus",
+      "title": "TSDB on disk",
+      "query": "prometheus_tsdb_storage_blocks_bytes",
+      "format": "metric",
+      "unit": "bytes",
+      "detail": "persisted blocks",
+      "accent": "blue",
+      "range": "6h",
+      "step": "5m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "query-latency",
+      "type": "prometheus",
+      "title": "Query latency p50 by slice",
+      "query": "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}",
+      "format": "chart",
+      "unit": "seconds",
+      "detail": "per evaluation phase",
+      "labels": [
+        "slice"
+      ],
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 8
+      }
+    },
+    {
+      "id": "active-series",
+      "type": "prometheus",
+      "title": "Active series",
+      "query": "prometheus_tsdb_head_series",
+      "format": "metric",
+      "unit": "number",
+      "detail": "in the TSDB head",
+      "accent": "violet",
+      "range": "6h",
+      "step": "5m",
+      "grid": {
+        "colSpan": 4
+      }
+    },
+    {
+      "id": "target-list",
+      "type": "prometheus",
+      "title": "Target health",
+      "query": "up",
+      "format": "targets",
+      "unit": "number",
+      "labels": [
+        "job",
+        "instance"
+      ],
+      "range": "5m",
+      "step": "1m",
+      "grid": {
+        "colSpan": 4
+      }
+    },
+    {
+      "id": "job-memory",
+      "type": "prometheus",
+      "title": "Memory by job",
+      "query": "avg by (job) (process_resident_memory_bytes)",
+      "format": "table",
+      "unit": "bytes",
+      "labels": [
+        "job"
+      ],
+      "range": "5m",
+      "step": "1m",
+      "grid": {
+        "colSpan": 4
+      }
+    },
+    {
+      "id": "job-cpu",
+      "type": "prometheus",
+      "title": "CPU by job",
+      "query": "sum by (job) (rate(process_cpu_seconds_total[5m]))",
+      "format": "table",
+      "unit": "number",
+      "detail": "cores in use",
+      "labels": [
+        "job"
+      ],
+      "range": "5m",
+      "step": "1m",
+      "grid": {
+        "colSpan": 4
+      }
+    },
+    {
+      "id": "samples",
+      "type": "prometheus",
+      "title": "Samples ingested",
+      "query": "sum(rate(prometheus_engine_query_samples_total[5m]))",
+      "format": "chart",
+      "unit": "number",
+      "detail": "samples per second",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 8
+      }
+    },
+    {
+      "id": "http-rate",
+      "type": "prometheus",
+      "title": "HTTP request rate",
+      "query": "sum(rate(prometheus_http_requests_total[5m]))",
+      "format": "metric",
+      "unit": "number",
+      "detail": "requests per second",
+      "accent": "blue",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 4
+      }
+    },
+    {
+      "id": "note",
+      "type": "html",
+      "title": "Team note",
+      "html": "<strong>Prometheus-backed panels</strong><p>Every panel above is a PromQL query proxied by the Stratum API. Query endpoints and credentials stay in the server environment, never in the dashboard JSON.</p>",
+      "grid": {
+        "colSpan": 12
+      }
+    }
+  ]
 }

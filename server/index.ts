@@ -3,13 +3,20 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sanitize from "sanitize-html";
-import { dashboardSchema, defaultDashboard, searchDashboard, weatherDashboard, type Dashboard, type Widget } from "../shared/dashboard.js";
+import { dashboardSchema, defaultDashboard, searchDashboard, weatherDashboard, type Dashboard, type PrometheusWidget, type Widget } from "../shared/dashboard.js";
+import { createPrometheus } from "./prometheus.js";
+import { formatValue, latestValue, seriesName, toSparkline } from "../shared/prometheus.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const dataDir = path.resolve(process.env.DATA_DIR ?? path.join(root, "data"));
 const dataFile = path.join(dataDir, "dashboards.json");
 const embedOrigins = (process.env.EMBED_ORIGINS ?? "https://example.com").split(",").map((value) => value.trim()).filter(Boolean);
+const prometheus = createPrometheus({
+  url: process.env.PROMETHEUS_URL,
+  token: process.env.PROMETHEUS_TOKEN,
+  cacheTtlMs: Number(process.env.PROMETHEUS_CACHE_TTL_MS ?? 10_000)
+});
 const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]!);
 const sanitizeHtml = (html: string) => sanitize(html, {
   allowedTags: ["p", "strong", "em", "b", "i", "small", "span", "br", "ul", "ol", "li", "a", "code", "pre", "blockquote"],
@@ -47,8 +54,50 @@ function renderWidget(widget: Widget) {
   if (widget.type === "links") return `<article class="card" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label>${widget.items.map((item) => `<a class="link" href="${escapeHtml(item.url)}" rel="noopener noreferrer"><span><b>${escapeHtml(item.label)}</b><small>${escapeHtml(item.hint)}</small></span><em>↗</em></a>`).join("")}</article>`;
   if (widget.type === "html") return `<article class="card prose" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label>${sanitizeHtml(widget.html)}</article>`;
   if (widget.type === "embed") return `<article class="card" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label>${isAllowedEmbed(widget.url) ? `<iframe title="${escapeHtml(widget.title)}" src="${escapeHtml(widget.url)}" sandbox="allow-scripts allow-forms allow-popups" style="height:${widget.height}px"></iframe>` : `<p>Embed origin is not allowed by this server.</p>`}</article>`;
+  if (widget.type !== "chart") return "";
   const max = Math.max(...widget.values, 1);
   return `<article class="card chart" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label><strong>${escapeHtml(widget.value)}</strong><small>${escapeHtml(widget.detail)}</small><div class="bars">${widget.values.map((value) => `<i style="height:${Math.max(5, (value / max) * 100)}%"></i>`).join("")}</div></article>`;
+}
+
+/** Renders a live PromQL panel for the dependency-free published HTML view. */
+async function renderPrometheusWidget(widget: PrometheusWidget) {
+  const span = `span ${widget.grid.colSpan}`;
+  const result = await prometheus.query(widget.query, widget.range, widget.step);
+  const label = `<label>${escapeHtml(widget.title)}</label>`;
+  const note = widget.detail ? `<small>${escapeHtml(widget.detail)}</small>` : "";
+  if (!result.ok) return `<article class="card" style="grid-column:${span}">${label}<p>${escapeHtml(result.error ?? "No data")}</p></article>`;
+
+  const value = latestValue(result.series);
+  const formatted = formatValue(value, widget.unit);
+
+  if (widget.format === "metric") {
+    const spark = toSparkline(result.series[0]?.points ?? []);
+    const trend = spark.length > 0 ? `<div class="spark">${spark.slice(-24).map((n) => `<i style="height:${Math.max(4, n)}%"></i>`).join("")}</div>` : "";
+    return `<article class="card metric" style="grid-column:${span}">${label}<strong>${escapeHtml(formatted.text)}</strong><small>${escapeHtml(formatted.suffix)}</small><p>${escapeHtml(widget.detail ?? "")}</p>${trend}</article>`;
+  }
+
+  if (widget.format === "targets") {
+    const up = result.series.filter((entry) => latestValue([entry]) === 1).length;
+    const rows = result.series.map((entry) => {
+      const state = entry.stale || latestValue([entry]) !== 1;
+      return `<div class="status"><i class="${state ? "down" : ""}"></i><span><b>${escapeHtml(seriesName(entry.labels, widget.labels))}</b><small>${state ? "Down" : "Up"}</small></span><em>${escapeHtml(seriesName(entry.labels, ["instance"]))}</em></div>`;
+    }).join("");
+    return `<article class="card" style="grid-column:${span}">${label}${note}<div class="status"><i></i><span><b>${up} of ${result.series.length} up</b><small>Prometheus targets</small></span></div>${rows}</article>`;
+  }
+
+  if (widget.format === "table") {
+    const rows = result.series.map((entry) => {
+      const shown = formatValue(latestValue([entry]), widget.unit);
+      return `<div class="status"><i></i><span><b>${escapeHtml(seriesName(entry.labels, widget.labels))}</b><small>${escapeHtml(entry.labels.instance ?? "")}</small></span><em>${escapeHtml(`${shown.text} ${shown.suffix}`.trim())}</em></div>`;
+    }).join("");
+    return `<article class="card" style="grid-column:${span}">${label}${note}${rows || "<p>No series returned</p>"}</article>`;
+  }
+
+  const series = result.series.slice(0, 6);
+  const max = Math.max(1, ...series.flatMap((entry) => entry.points.map(([, v]) => v ?? 0)));
+  const sparkline = (points: [number, number | null][]) => points.slice(-40).map(([, v]) => `<i style="height:${Math.max(5, ((v ?? 0) / max) * 100)}%"></i>`).join("");
+  const rows = series.map((entry) => `<div class="chart-row"><label>${escapeHtml(seriesName(entry.labels, widget.labels))}</label><div class="bars">${sparkline(entry.points)}</div></div>`).join("");
+  return `<article class="card chart" style="grid-column:${span}">${label}<strong>${escapeHtml(formatted.text)} ${escapeHtml(formatted.suffix)}</strong>${note}${rows || "<p>No series returned</p>"}</article>`;
 }
 
 function page(dashboard: Dashboard, content: string) {
@@ -68,14 +117,23 @@ async function renderPublished(dashboard: Dashboard) {
     const config=dashboard.weather!;const params=new URLSearchParams({latitude:String(config.latitude),longitude:String(config.longitude),current:"temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",daily:"weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",timezone:"auto",forecast_days:"7",temperature_unit:config.temperatureUnit});
     try{const response=await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);if(!response.ok)throw new Error("weather request failed");const data=await response.json() as {current:{temperature_2m:number;apparent_temperature:number;relative_humidity_2m:number;weather_code:number;wind_speed_10m:number};current_units:{temperature_2m:string;wind_speed_10m:string};daily:{time:string[];weather_code:number[];temperature_2m_max:number[];temperature_2m_min:number[];precipitation_probability_max:number[]}};return page(dashboard,`<header><div><label>LIVE WEATHER</label><h1>${escapeHtml(config.location)}</h1><p>${config.latitude.toFixed(2)}°, ${config.longitude.toFixed(2)}°</p></div><span>OPEN-METEO</span></header><section class="weather-published"><article class="weather-hero"><div class="symbol">${weatherSymbol(data.current.weather_code)}</div><strong>${Math.round(data.current.temperature_2m)}${escapeHtml(data.current_units.temperature_2m)}</strong><p>Feels like ${Math.round(data.current.apparent_temperature)}° · Humidity ${data.current.relative_humidity_2m}% · Wind ${Math.round(data.current.wind_speed_10m)} ${escapeHtml(data.current_units.wind_speed_10m)}</p></article><article class="forecast"><label>7-DAY OUTLOOK</label>${data.daily.time.map((date,index)=>`<div><b>${index===0?"Today":new Date(`${date}T12:00:00`).toLocaleDateString("en",{weekday:"short"})}</b><span>${weatherSymbol(data.daily.weather_code[index])}</span><small>${data.daily.precipitation_probability_max[index]}% rain</small><b>${Math.round(data.daily.temperature_2m_max[index])}° / ${Math.round(data.daily.temperature_2m_min[index])}°</b></div>`).join("")}</article></section>`);}catch{return page(dashboard,`<header><div><label>LIVE WEATHER</label><h1>${escapeHtml(config.location)}</h1></div></header><main><article class="card" style="grid-column:span 12"><h2>Forecast temporarily unavailable</h2><p>Refresh this page to try again.</p></article></main>`)}
   }
-  return page(dashboard, `<header><div><label>DASHBOARD / ${escapeHtml(dashboard.id)}</label><h1>${escapeHtml(dashboard.title)}</h1><p>${escapeHtml(dashboard.description)}</p></div><span>REV ${dashboard.revision}</span></header><main>${dashboard.widgets.map(renderWidget).join("")}</main>`);
+  return page(dashboard, `<header><div><label>DASHBOARD / ${escapeHtml(dashboard.id)}</label><h1>${escapeHtml(dashboard.title)}</h1><p>${escapeHtml(dashboard.description)}</p></div><span>REV ${dashboard.revision}</span></header><main>${(await Promise.all(dashboard.widgets.map((widget) => widget.type === "prometheus" ? renderPrometheusWidget(widget) : renderWidget(widget)))).join("")}</main>`);
 }
 
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => response.json({ status: "ok" }));
-  app.get("/api/config", (_request, response) => response.json({ embedOrigins }));
+  app.get("/api/config", (_request, response) => response.json({ embedOrigins, prometheus: { configured: prometheus.configured, url: process.env.PROMETHEUS_URL ?? null } }));
+  app.get("/api/prometheus/query", async (request, response, next) => {
+    try {
+      const query = String(request.query.query ?? "");
+      if (!query) return response.status(400).json({ error: "A PromQL query is required" });
+      if (query.length > 2000) return response.status(400).json({ error: "Query is too long" });
+      const result = await prometheus.query(query, String(request.query.range ?? "6h"), String(request.query.step ?? "1m"));
+      result.ok ? response.json(result) : response.status(502).json(result);
+    } catch (error) { next(error); }
+  });
   app.get("/api/dashboards", async (_request, response, next) => { try { response.json((await readDashboards()).map(({ widgets, ...item }) => ({ ...item, widgetCount: widgets.length }))); } catch (error) { next(error); } });
   app.get("/api/dashboards/:id/export", async (request, response, next) => { try { const item=(await readDashboards()).find((dashboard)=>dashboard.id===request.params.id); if(!item)return response.status(404).json({error:"Dashboard not found"}); response.set({"Content-Type":"application/json; charset=utf-8","Content-Disposition":`attachment; filename="${item.id}.json"`}).send(JSON.stringify(item,null,2)); } catch(error){next(error);} });
   app.get("/api/dashboards/:id", async (request, response, next) => { try { const item = (await readDashboards()).find((dashboard) => dashboard.id === request.params.id); item ? response.json(item) : response.status(404).json({ error: "Dashboard not found" }); } catch (error) { next(error); } });
