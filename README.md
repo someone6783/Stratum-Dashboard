@@ -38,11 +38,23 @@ Tags:
 | Tag | Meaning |
 | --- | --- |
 | `latest` | Newest build pushed from `master` |
-| `ebc76de` | Immutable tag for one commit, matching the short SHA |
+| `6eebf70` | Immutable tag for one commit, matching the short SHA |
 
 Pin a commit tag rather than `latest` when a deployment should stay on a known build. Images are built for `linux/amd64` only.
 
 To build locally instead, use `docker build -t stratum .` and swap `image:` for `build: .` in the compose file.
+
+### Where the image appears on GitHub
+
+The package is **not linked to this repository**, because it was pushed with a personal access token from outside CI. GitHub's repository Packages tab only lists linked packages, so the image will not appear at `github.com/someone6783/Stratum-Dashboard/packages`. It lives on the account instead:
+
+```
+https://github.com/users/someone6783/packages/container/package/stratum-dashboard
+```
+
+It is published and pulls normally; only its placement differs. To make it show up on the repository, the package has to be deleted and republished from this repository's Actions using `GITHUB_TOKEN`, which links it automatically. There is no API for attaching an existing package to a repository, and the repository token is refused with `read_package` until the unlinked package is gone.
+
+Package visibility is also a web-UI-only setting; the REST API has no endpoint for it.
 
 ### Docker Compose
 
