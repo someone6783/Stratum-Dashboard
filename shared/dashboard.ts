@@ -31,10 +31,15 @@ const embedWidget = z.object({
   height: z.number().int().min(160).max(1200).default(360), grid: gridSchema.default({ colSpan: 12 })
 });
 const durationField = z.string().regex(/^\d+(\.\d+)?[smhdwy]$/, "Use a Prometheus duration such as 30s, 6h or 2d");
+const sectionWidget = z.object({
+  id: z.string().min(1), type: z.literal("section"), title: z.string().min(1).max(80),
+  grid: gridSchema.default({ colSpan: 12 })
+});
 const prometheusWidget = z.object({
   id: z.string().min(1), type: z.literal("prometheus"), title: z.string().min(1).max(80),
   query: z.string().min(1).max(2000), format: z.enum(["metric", "chart", "table", "targets"]).default("metric"),
   unit: z.enum(["number", "bytes", "percent", "seconds", "duration", "text"]).default("number"),
+  unitSuffix: z.string().max(12).optional(),
   detail: z.string().max(160).optional(), accent: z.enum(["lime", "violet", "blue"]).default("lime").optional(),
   range: durationField.default("6h"), step: durationField.default("1m"),
   refreshMs: z.number().int().min(5000).max(3600000).optional(),
@@ -42,9 +47,10 @@ const prometheusWidget = z.object({
   grid: gridSchema.default({ colSpan: 3 })
 });
 
-export const widgetSchema = z.discriminatedUnion("type", [metricWidget, statusWidget, chartWidget, linksWidget, htmlWidget, embedWidget, prometheusWidget]);
+export const widgetSchema = z.discriminatedUnion("type", [metricWidget, statusWidget, chartWidget, linksWidget, htmlWidget, embedWidget, sectionWidget, prometheusWidget]);
 
 export type PrometheusWidget = z.infer<typeof prometheusWidget>;
+export type SectionWidget = z.infer<typeof sectionWidget>;
 
 export const dashboardSchema = z.object({
   schemaVersion: z.literal(1),
@@ -76,17 +82,22 @@ export const defaultDashboard: Dashboard = {
   schemaVersion: 1, id: "overview", title: "Overview", description: "Live Prometheus metrics for every monitored target", mode: "dashboard",
   theme: { accent: "#b7f34a", density: "compact" }, revision: 0,
   widgets: [
-    { id: "targets-up", type: "prometheus", title: "Targets up", query: "sum(up)", format: "metric", unit: "number", detail: "scraping without error", accent: "lime", range: "6h", step: "1m", grid: { colSpan: 3 } },
-    { id: "scrape-health", type: "prometheus", title: "Scrape health", query: "100 * avg(up)", format: "metric", unit: "percent", detail: "of configured targets", accent: "lime", range: "6h", step: "1m", grid: { colSpan: 3 } },
-    { id: "query-rate", type: "prometheus", title: "Query rate", query: "sum(rate(prometheus_engine_query_duration_seconds_count[5m]))", format: "metric", unit: "number", detail: "queries per second", accent: "violet", range: "6h", step: "1m", grid: { colSpan: 3 } },
-    { id: "tsdb-size", type: "prometheus", title: "TSDB on disk", query: "prometheus_tsdb_storage_blocks_bytes", format: "metric", unit: "bytes", detail: "persisted blocks", accent: "blue", range: "6h", step: "5m", grid: { colSpan: 3 } },
-    { id: "query-latency", type: "prometheus", title: "Query latency p50 by slice", query: "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}", format: "chart", unit: "seconds", detail: "per evaluation phase", labels: ["slice"], range: "6h", step: "1m", grid: { colSpan: 8 } },
-    { id: "active-series", type: "prometheus", title: "Active series", query: "prometheus_tsdb_head_series", format: "metric", unit: "number", detail: "in the TSDB head", accent: "violet", range: "6h", step: "5m", grid: { colSpan: 4 } },
+    { id: "s-overview", type: "section", title: "Overview", grid: { colSpan: 12 } },
+    { id: "targets-up", type: "prometheus", title: "Targets up", query: "sum(up)", format: "metric", unit: "number", detail: "scraping without error", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "scrape-health", type: "prometheus", title: "Scrape health", query: "100 * avg(up)", format: "metric", unit: "percent", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "query-rate", type: "prometheus", title: "Query rate", query: "sum(rate(prometheus_engine_query_duration_seconds_count[5m]))", format: "metric", unit: "number", unitSuffix: "/s", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "tsdb-size", type: "prometheus", title: "TSDB on disk", query: "prometheus_tsdb_storage_blocks_bytes", format: "metric", unit: "bytes", range: "6h", step: "5m", grid: { colSpan: 3 } },
+    { id: "active-series", type: "prometheus", title: "Active series", query: "prometheus_tsdb_head_series", format: "metric", unit: "number", range: "6h", step: "5m", grid: { colSpan: 3 } },
+    { id: "http-rate", type: "prometheus", title: "HTTP request rate", query: "sum(rate(prometheus_http_requests_total[5m]))", format: "metric", unit: "number", unitSuffix: "/s", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "sample-rate", type: "prometheus", title: "Sample rate", query: "sum(rate(prometheus_engine_query_samples_total[5m]))", format: "metric", unit: "number", unitSuffix: "/s", range: "6h", step: "1m", grid: { colSpan: 3 } },
+    { id: "head-chunks", type: "prometheus", title: "Head chunks", query: "prometheus_tsdb_head_chunks", format: "metric", unit: "number", range: "6h", step: "5m", grid: { colSpan: 3 } },
+    { id: "s-targets", type: "section", title: "Targets", grid: { colSpan: 12 } },
     { id: "target-list", type: "prometheus", title: "Target health", query: "up", format: "targets", unit: "number", labels: ["job", "instance"], range: "5m", step: "1m", grid: { colSpan: 4 } },
     { id: "job-memory", type: "prometheus", title: "Memory by job", query: "avg by (job) (process_resident_memory_bytes)", format: "table", unit: "bytes", labels: ["job"], range: "5m", step: "1m", grid: { colSpan: 4 } },
-    { id: "job-cpu", type: "prometheus", title: "CPU by job", query: "sum by (job) (rate(process_cpu_seconds_total[5m]))", format: "table", unit: "number", detail: "cores in use", labels: ["job"], range: "5m", step: "1m", grid: { colSpan: 4 } },
-    { id: "samples", type: "prometheus", title: "Samples ingested", query: "sum(rate(prometheus_engine_query_samples_total[5m]))", format: "chart", unit: "number", detail: "samples per second", range: "6h", step: "1m", grid: { colSpan: 8 } },
-    { id: "http-rate", type: "prometheus", title: "HTTP request rate", query: "sum(rate(prometheus_http_requests_total[5m]))", format: "metric", unit: "number", detail: "requests per second", accent: "blue", range: "6h", step: "1m", grid: { colSpan: 4 } },
+    { id: "job-cpu", type: "prometheus", title: "CPU by job", query: "sum by (job) (rate(process_cpu_seconds_total[5m]))", format: "table", unit: "number", unitSuffix: "cores", labels: ["job"], range: "5m", step: "1m", grid: { colSpan: 4 } },
+    { id: "s-prometheus", type: "section", title: "Prometheus", grid: { colSpan: 12 } },
+    { id: "query-latency", type: "prometheus", title: "Query latency p50 by slice", query: "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}", format: "chart", unit: "seconds", labels: ["slice"], range: "6h", step: "1m", grid: { colSpan: 6 } },
+    { id: "samples", type: "prometheus", title: "Samples ingested", query: "sum(rate(prometheus_engine_query_samples_total[5m]))", format: "chart", unit: "number", unitSuffix: "/s", range: "6h", step: "1m", grid: { colSpan: 6 } },
     { id: "note", type: "html", title: "Team note", html: "<strong>Prometheus-backed panels</strong><p>Every panel above is a PromQL query proxied by the Stratum API. Query endpoints and credentials stay in the server environment, never in the dashboard JSON.</p>", grid: { colSpan: 12 } }
   ]
 };

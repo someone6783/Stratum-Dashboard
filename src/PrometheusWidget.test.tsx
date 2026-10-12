@@ -24,7 +24,21 @@ describe("prometheus panels", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ json: async () => ({ ok: true, stale: false, value: 87.75, series: [{ labels: {}, stale: false, points: [[at(60), 87.75]] }] }) }));
     const { container } = render(<PrometheusWidgetPanel widget={prometheusWidgetSchemaForTest({ id: "p", title: "Scrape health", query: "100 * avg(up)", format: "metric", unit: "percent" })}/>);
     expect(await screen.findByText("87.8")).toBeTruthy();
-    expect(container.querySelector(".metric strong span")?.textContent).toBe("%");
+    expect(container.querySelector(".stat-value em")?.textContent).toBe("%");
+  });
+
+  it("appends a unit suffix so rates read like a monitoring UI", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ json: async () => ({ ok: true, stale: false, value: 10_752, series: [{ labels: {}, stale: false, points: [[at(60), 10_752]] }] }) }));
+    const { container } = render(<PrometheusWidgetPanel widget={prometheusWidgetSchemaForTest({ id: "s", title: "Upload speed", query: "rate(x[5m])", format: "metric", unit: "bytes", unitSuffix: "/s" })}/>);
+    expect(await screen.findByText("10.5")).toBeTruthy();
+    expect(container.querySelector(".stat-value em")?.textContent).toBe("KiB/s");
+  });
+
+  it("shows No data instead of an empty card when a query returns nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ json: async () => ({ ok: true, stale: false, value: null, series: [] }) }));
+    const { container } = render(<PrometheusWidgetPanel widget={prometheusWidgetSchemaForTest({ id: "nd", title: "S3 Errors / sec", query: "rate(y[5m])", format: "metric" })}/>);
+    expect(await screen.findByText("No data")).toBeTruthy();
+    expect(container.querySelector(".stat-spark")).toBeNull();
   });
 
   it("renders a targets list with per-target health", async () => {
@@ -37,7 +51,8 @@ describe("prometheus panels", () => {
     }) }));
     render(<PrometheusWidgetPanel widget={prometheusWidgetSchemaForTest({ id: "t", title: "Target health", query: "up", format: "targets", labels: ["job", "instance"] })}/>);
     expect(await screen.findByText("1/2 up")).toBeTruthy();
-    expect(screen.getByText("No recent samples")).toBeTruthy();
+    expect(screen.getByText(/worker · worker:9001/)).toBeTruthy();
+    expect(document.querySelectorAll(".target-row .down-dot")).toHaveLength(1);
     expect(screen.getAllByText("db:9187").length).toBeGreaterThan(0);
   });
 
@@ -63,10 +78,13 @@ describe("prometheus panels", () => {
         { labels: { slice: "inner_eval" }, stale: false, points: [[at(180), 0.002], [at(120), 0.004], [at(60), 0.006]] }
       ]
     }) }));
-    const { container } = render(<PrometheusWidgetPanel widget={prometheusWidgetSchemaForTest({ id: "c", title: "Query latency p99", query: "prometheus_engine_query_duration_seconds{quantile=\"0.99\"}", format: "chart", unit: "seconds", labels: ["slice"] })}/>);
-    await waitFor(() => expect(container.querySelectorAll("svg path.line")).toHaveLength(2));
+    const { container } = render(<PrometheusWidgetPanel widget={prometheusWidgetSchemaForTest({ id: "c", title: "Query latency p50", query: "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}", format: "chart", unit: "seconds", labels: ["slice"] })}/>);
+    await waitFor(() => expect(container.querySelectorAll("svg path.ts-line")).toHaveLength(2));
     expect(screen.getByText("queue_time")).toBeTruthy();
-    expect(container.querySelector("svg path.line")?.getAttribute("d")).toMatch(/^M0\.0/);
+    expect(container.querySelector("svg path.ts-line")?.getAttribute("d")).toMatch(/^M0\.00/);
+    expect(container.querySelectorAll(".ts-yaxis span").length).toBeGreaterThan(1);
+    expect(container.querySelectorAll(".ts-xaxis span")).toHaveLength(5);
+    expect(container.querySelectorAll(".ts-legend span")).toHaveLength(2);
   });
 
   it("explains an unconfigured datasource instead of showing a blank panel", async () => {

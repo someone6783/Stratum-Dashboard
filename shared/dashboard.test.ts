@@ -19,8 +19,17 @@ describe("dashboard contract", () => {
     }
   });
   it("rejects malformed Prometheus panel durations and empty queries", () => {
-    const [panel] = defaultDashboard.widgets;
+    const panel = defaultDashboard.widgets.find((item) => item.type === "prometheus")!;
     expect(() => dashboardSchema.parse({ ...defaultDashboard, widgets: [{ ...panel, type: "prometheus", query: "sum(up)", range: "6 hours" }] })).toThrow();
     expect(() => dashboardSchema.parse({ ...defaultDashboard, widgets: [{ ...panel, type: "prometheus", query: "" }] })).toThrow();
+  });
+  it("groups panels with full-width section headings", () => {
+    const sections = defaultDashboard.widgets.filter((widget) => widget.type === "section");
+    expect(sections.length).toBeGreaterThanOrEqual(3);
+    for (const section of sections) {
+      if (section.type !== "section") continue;
+      expect(section.grid.colSpan).toBe(12);
+      expect(section.title.length).toBeGreaterThan(0);
+    }
   });
 });

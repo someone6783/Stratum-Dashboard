@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Activity, AlertTriangle, Radio } from "lucide-react";
+import { AlertTriangle, Radio } from "lucide-react";
 import type { PrometheusWidget } from "../shared/dashboard";
-import { formatValue, latestValue, seriesName, toSparkline, type PromResult, type PromSeries } from "../shared/prometheus";
+import { axisTicks, formatValue, latestValue, presentValue, seriesName, type PromResult, type PromPoint, type PromSeries } from "../shared/prometheus";
 
 const RANGE_CHOICES = ["1h", "6h", "24h", "7d"];
-const SERIES_COLORS = ["var(--accent)", "#8f7cff", "#4aa8ff", "#ffb454", "#ff7a90", "#3ddc97"];
-const VIEW_WIDTH = 720;
-const VIEW_HEIGHT = 180;
+/** Monitoring-UI default series palette: blue, green, yellow, red, purple, cyan. */
+export const SERIES_COLORS = ["#3d8bfd", "#3fb950", "#e3b341", "#f85149", "#a371f7", "#39c5cf"];
+const PLOT_HEIGHT = 200;
+const SPARK_HEIGHT = 44;
 
 type Status = "loading" | "ready" | "error" | "unconfigured";
 
 const failureText = (result: PromResult | undefined, status: Status) =>
   status === "error" ? (result?.error ?? "Query failed")
   : status === "unconfigured" ? "Prometheus is not configured on this server."
-  : status === "loading" ? "Querying Prometheus…"
-  : "No series returned.";
+  : status === "loading" ? "Loading…"
+  : "No data";
 
 /** Polls the Stratum proxy for a PromQL result on the widget's refresh interval, pausing while the tab is hidden. */
 function usePrometheus(widget: PrometheusWidget, range: string, step: string) {
@@ -52,71 +53,99 @@ function usePrometheus(widget: PrometheusWidget, range: string, step: string) {
   return { result, status, refreshedAt };
 }
 
-function MetricPanel({ widget, result, status, style }: { widget: PrometheusWidget; result?: PromResult; status: Status; style: CSSProperties }) {
-  const formatted = formatValue(latestValue(result?.series ?? []), widget.unit);
-  const spark = toSparkline(result?.series[0]?.points ?? []);
+/** Maps a series into 0..1 coordinates inside a viewBox, leaving headroom for the stroke. */
+function toPath(points: PromPoint[], min: number, span: number, width: number, height: number) {
+  return points.map(([, value], index) => {
+    const x = points.length > 1 ? (index / (points.length - 1)) * width : width / 2;
+    const y = height - (((value ?? min) - min) / span) * height;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(" ");
+}
+
+function boundsOf(series: PromSeries[]) {
+  const values = series.flatMap((entry) => entry.points.map(([, value]) => value)).filter((value): value is number => value !== null);
+  if (values.length === 0) return null;
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const min = rawMin >= 0 ? 0 : rawMin;
+  const max = rawMax === min ? min + Math.abs(min || 1) : rawMax;
+  return { min, max, span: max - min };
+}
+
+function StatPanel({ widget, result, status, style }: { widget: PrometheusWidget; result?: PromResult; status: Status; style: CSSProperties }) {
   const healthy = status === "ready" && !result?.stale;
-  return <article className={`panel metric ${widget.accent ?? "lime"}`} style={style}>
-    <div className="panel-label"><span>{widget.title}</span><Activity size={17}/></div>
-    <strong className={healthy ? undefined : "value-pending"}>{formatted.text}{formatted.suffix && <span>{formatted.suffix}</span>}</strong>
-    <p><b className={healthy ? undefined : "value-warning"}>{status === "ready" ? (healthy ? widget.detail ?? "Live" : "No recent samples") : failureText(result, status)}</b></p>
-    {spark.length > 0 && <div className="mini-bars">{spark.slice(-24).map((height, index) => <i key={index} style={{ height: `${Math.max(4, height)}%` }}/>)}</div>}
+  const shown = presentValue(latestValue(result?.series ?? []), widget.unit, widget.unitSuffix);
+  const points = result?.series[0]?.points ?? [];
+  const bounds = boundsOf(result?.series ?? []);
+
+  return <article className="panel stat-card" style={style}>
+    <header className="panel-title"><span>{widget.title}</span>{widget.detail && healthy && <small>{widget.detail}</small>}</header>
+    {healthy && shown.text !== "—" ? <>
+      <div className="stat-value"><strong>{shown.text}</strong>{shown.suffix && <em>{shown.suffix}</em>}</div>
+      <svg className="stat-spark" viewBox={`0 0 100 ${SPARK_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true">
+        {bounds && <path className="spark-line" style={{ stroke: SERIES_COLORS[0] }} d={toPath(points, bounds.min, bounds.span, 100, SPARK_HEIGHT)}/>}
+      </svg>
+    </> : <div className="panel-state">{status === "error" && <AlertTriangle size={14}/>} {failureText(result, status)}</div>}
   </article>;
 }
 
-function ChartPanel({ widget, range, setRange, result, status, style }: { widget: PrometheusWidget; range: string; setRange: (value: string) => void; result?: PromResult; status: Status; style: CSSProperties }) {
+function TimeSeriesPanel({ widget, range, setRange, result, status, style }: { widget: PrometheusWidget; range: string; setRange: (value: string) => void; result?: PromResult; status: Status; style: CSSProperties }) {
   const series = (result?.series ?? []).slice(0, SERIES_COLORS.length);
-  const values = series.flatMap((entry) => entry.points.map(([, value]) => value)).filter((value): value is number => value !== null);
-  const min = Math.min(...values, 0);
-  const span = Math.max(...values, 0) - min || 1;
+  const bounds = boundsOf(series);
+  const ticks = bounds ? axisTicks(bounds.min, bounds.max) : [];
+  const shown = presentValue(latestValue(result?.series ?? []), widget.unit, widget.unitSuffix);
   const timestamps = series[0]?.points.map(([time]) => time) ?? [];
-  const axis = useMemo(() => {
+
+  const xLabels = useMemo(() => {
     if (timestamps.length === 0) return [];
-    return Array.from({ length: 4 }, (_, index) => timestamps[Math.round((index * (timestamps.length - 1)) / 3)]);
+    return Array.from({ length: 5 }, (_, index) => timestamps[Math.round((index * (timestamps.length - 1)) / 4)]);
   }, [timestamps]);
 
-  const path = (entry: PromSeries) => entry.points.map(([time, value], index) => {
-    const x = timestamps.length > 1 ? (index / (timestamps.length - 1)) * VIEW_WIDTH : VIEW_WIDTH / 2;
-    const y = VIEW_HEIGHT - 12 - (((value ?? min) - min) / span) * (VIEW_HEIGHT - 30);
-    return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-  }).join(" ");
+  const ready = status === "ready" && series.length > 0 && series[0].points.length > 1 && bounds;
 
-  const current = formatValue(latestValue(result?.series ?? []), widget.unit);
-  const ready = status === "ready" && series.length > 0 && series[0].points.length > 1;
-
-  return <article className="panel chart-card" style={style}>
-    <div className="chart-head">
-      <div>
-        <div className="panel-label"><span>{widget.title}</span></div>
-        <strong className={ready ? undefined : "value-pending"}>{current.text}{current.suffix && <span className="chart-suffix">{current.suffix}</span>}</strong>
-        <small>{widget.detail}</small>
-      </div>
-      <select aria-label={`${widget.title} time range`} value={range} onChange={(event) => setRange(event.target.value)}>
+  return <article className="panel ts-card" style={style}>
+    <header className="panel-title">
+      <span>{widget.title}</span>
+      {ready && <select aria-label={`${widget.title} time range`} value={range} onChange={(event) => setRange(event.target.value)}>
         {RANGE_CHOICES.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
-      </select>
-    </div>
-    {ready ? <>
-      {series.length > 1 && <ul className="chart-legend">{series.map((entry, index) => <li key={index}><i style={{ background: SERIES_COLORS[index % SERIES_COLORS.length] }}/>{seriesName(entry.labels, widget.labels)}</li>)}</ul>}
-      <div className="chart"><div className="grid-lines"/>
-        <svg viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`} preserveAspectRatio="none" role="img" aria-label={`${widget.title} chart`}>
-          {series.map((entry, index) => <path key={index} className="line" style={{ stroke: SERIES_COLORS[index % SERIES_COLORS.length] }} d={path(entry)}/>)}
-        </svg>
-        <div className="axis">{axis.map((time, index) => <span key={index}>{new Date(time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>)}</div>
+      </select>}
+    </header>
+    {ready ? <div className="ts-chart">
+      <div className="ts-yaxis" style={{ height: PLOT_HEIGHT }}>
+        {ticks.map((tick) => {
+          const percent = ((tick - bounds.min) / bounds.span) * 100;
+          const label = presentValue(tick, widget.unit, widget.unitSuffix);
+          return <span key={tick} style={{ bottom: `${percent}%` }}>{label.text}{label.suffix && <em>{label.suffix}</em>}</span>;
+        })}
       </div>
-    </> : <div className="chart-empty">{failureText(result, status)}</div>}
+      <div className="ts-main">
+        <div className="ts-plot" style={{ height: PLOT_HEIGHT }}>
+          <svg viewBox={`0 0 100 ${PLOT_HEIGHT}`} preserveAspectRatio="none" role="img" aria-label={`${widget.title} chart`}>
+            {ticks.map((tick) => {
+              const y = PLOT_HEIGHT - ((tick - bounds.min) / bounds.span) * PLOT_HEIGHT;
+              return <line key={tick} x1="0" y1={y} x2="100" y2={y} className="ts-grid"/>;
+            })}
+            {series.map((entry, index) => <path key={index} className="ts-line" style={{ stroke: SERIES_COLORS[index % SERIES_COLORS.length] }} d={toPath(entry.points, bounds.min, bounds.span, 100, PLOT_HEIGHT)}/>)}
+          </svg>
+        </div>
+        <div className="ts-xaxis">{xLabels.map((time, index) => <span key={index}>{new Date(time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>)}</div>
+      </div>
+    </div> : <div className="panel-state panel-state-tall">{failureText(result, status)}</div>}
+    {ready && <footer className="ts-legend">{series.map((entry, index) => <span key={index}><i style={{ background: SERIES_COLORS[index % SERIES_COLORS.length] }}/>{seriesName(entry.labels, widget.labels)}</span>)}</footer>}
+    {!ready && shown.text !== "—" && status === "ready" && <p className="panel-note">{widget.detail}</p>}
   </article>;
 }
 
 function TablePanel({ widget, result, status, style }: { widget: PrometheusWidget; result?: PromResult; status: Status; style: CSSProperties }) {
   const series = result?.series ?? [];
   return <article className="panel table-card" style={style}>
-    <div className="panel-label"><span>{widget.title}</span>{status === "ready" && <span className="live">LIVE</span>}</div>
+    <header className="panel-title"><span>{widget.title}</span>{widget.detail && status === "ready" && <small>{widget.detail}</small>}</header>
     {status === "ready" && series.length > 0 ? <table className="metric-table">
       <tbody>{series.slice(0, 12).map((entry, index) => {
-        const value = formatValue(latestValue([entry]), widget.unit);
-        return <tr key={index}><td>{seriesName(entry.labels, widget.labels)}</td><td>{value.text}{value.suffix && <span className="unit">{value.suffix}</span>}</td></tr>;
+        const value = presentValue(latestValue([entry]), widget.unit, widget.unitSuffix);
+        return <tr key={index}><td>{seriesName(entry.labels, widget.labels)}</td><td>{value.text}{value.suffix && <em>{value.suffix}</em>}</td></tr>;
       })}</tbody>
-    </table> : <div className="chart-empty">{failureText(result, status)}</div>}
+    </table> : <div className="panel-state">{failureText(result, status)}</div>}
   </article>;
 }
 
@@ -124,17 +153,17 @@ function TargetsPanel({ widget, result, status, refreshedAt, style }: { widget: 
   const series = result?.series ?? [];
   const up = series.filter((entry) => !entry.stale && latestValue([entry]) === 1).length;
   const degraded = status === "ready" && up < series.length;
-  return <article className="panel system-card" style={style}>
-    <div className="panel-label"><span>{widget.title}</span><span className={`live ${degraded ? "warn" : ""}`}><Radio size={11}/> {status === "ready" ? `${up}/${series.length} up` : "SYNC"}</span></div>
+  return <article className="panel targets-card" style={style}>
+    <header className="panel-title"><span>{widget.title}</span><span className={`live ${degraded ? "warn" : ""}`}><Radio size={11}/> {status === "ready" ? `${up}/${series.length} up` : "SYNC"}</span></header>
     {series.slice(0, 12).map((entry, index) => {
       const healthy = !entry.stale && latestValue([entry]) === 1;
-      return <div className="system-row" key={index}>
+      return <div className="target-row" key={index}>
         <span className={healthy ? "ok-dot" : "down-dot"}/>
-        <div><b>{seriesName(entry.labels, widget.labels)}</b><small>{healthy ? "Up" : entry.stale ? "No recent samples" : "Down"}</small></div>
+        <b>{seriesName(entry.labels, widget.labels)}</b>
         <em>{entry.labels.instance ?? ""}</em>
       </div>;
     })}
-    {series.length === 0 && <div className="chart-empty">{status === "error" && <AlertTriangle size={14}/>} {failureText(result, status)}</div>}
+    {series.length === 0 && <div className="panel-state">{status === "error" && <AlertTriangle size={14}/>} {failureText(result, status)}</div>}
     {refreshedAt && <footer className="panel-foot">Updated {refreshedAt.toLocaleTimeString()}</footer>}
   </article>;
 }
@@ -144,8 +173,8 @@ export function PrometheusWidgetPanel({ widget }: { widget: PrometheusWidget }) 
   const { result, status, refreshedAt } = usePrometheus(widget, range, widget.step);
   const style = { "--span": widget.grid.colSpan } as CSSProperties;
 
-  if (widget.format === "chart") return <ChartPanel widget={widget} range={range} setRange={setRange} result={result} status={status} style={style}/>;
+  if (widget.format === "chart") return <TimeSeriesPanel widget={widget} range={range} setRange={setRange} result={result} status={status} style={style}/>;
   if (widget.format === "table") return <TablePanel widget={widget} result={result} status={status} style={style}/>;
   if (widget.format === "targets") return <TargetsPanel widget={widget} result={result} status={status} refreshedAt={refreshedAt} style={style}/>;
-  return <MetricPanel widget={widget} result={result} status={status} style={style}/>;
+  return <StatPanel widget={widget} result={result} status={status} style={style}/>;
 }

@@ -1,11 +1,15 @@
 import express from "express";
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import sanitize from "sanitize-html";
 import { dashboardSchema, defaultDashboard, searchDashboard, weatherDashboard, type Dashboard, type PrometheusWidget, type Widget } from "../shared/dashboard.js";
 import { createPrometheus } from "./prometheus.js";
-import { formatValue, latestValue, seriesName, toSparkline } from "../shared/prometheus.js";
+import { latestValue, presentValue, seriesName } from "../shared/prometheus.js";
+
+const execFileAsync = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -45,10 +49,26 @@ async function readDashboards(): Promise<Dashboard[]> {
   return dashboards;
 }
 
+/** Reads the newest commit so the sidebar can show a release date. Absent in images built without git metadata. */
+let releaseCache: { date: string; sha: string; subject: string } | null | undefined;
+async function readRelease() {
+  if (releaseCache !== undefined) return releaseCache;
+  try {
+    await fs.access(path.join(root, ".git"));
+    const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%cI%n%h%n%s"], { cwd: root, timeout: 3000 });
+    const [date, sha, subject] = stdout.split("\n");
+    releaseCache = date && sha ? { date, sha, subject: subject ?? "" } : null;
+  } catch {
+    releaseCache = null;
+  }
+  return releaseCache;
+}
+
 function isAllowedEmbed(url: string) { try { return embedOrigins.includes("*") || embedOrigins.includes(new URL(url).origin); } catch { return false; } }
 
 function renderWidget(widget: Widget) {
   const span = `span ${widget.grid.colSpan}`;
+  if (widget.type === "section") return `<h2 class="section-head" style="grid-column:${span}">${escapeHtml(widget.title)}</h2>`;
   if (widget.type === "metric") return `<article class="card metric" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label><strong>${escapeHtml(widget.value)}</strong><p>${escapeHtml(widget.detail)}</p></article>`;
   if (widget.type === "status") return `<article class="card" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label>${widget.items.map((item) => `<div class="status"><i></i><span><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.status)}</small></span><em>${escapeHtml(item.value)}</em></div>`).join("")}</article>`;
   if (widget.type === "links") return `<article class="card" style="grid-column:${span}"><label>${escapeHtml(widget.title)}</label>${widget.items.map((item) => `<a class="link" href="${escapeHtml(item.url)}" rel="noopener noreferrer"><span><b>${escapeHtml(item.label)}</b><small>${escapeHtml(item.hint)}</small></span><em>↗</em></a>`).join("")}</article>`;
@@ -68,12 +88,24 @@ async function renderPrometheusWidget(widget: PrometheusWidget) {
   if (!result.ok) return `<article class="card" style="grid-column:${span}">${label}<p>${escapeHtml(result.error ?? "No data")}</p></article>`;
 
   const value = latestValue(result.series);
-  const formatted = formatValue(value, widget.unit);
+  const formatted = presentValue(value, widget.unit, widget.unitSuffix);
 
   if (widget.format === "metric") {
-    const spark = toSparkline(result.series[0]?.points ?? []);
-    const trend = spark.length > 0 ? `<div class="spark">${spark.slice(-24).map((n) => `<i style="height:${Math.max(4, n)}%"></i>`).join("")}</div>` : "";
-    return `<article class="card metric" style="grid-column:${span}">${label}<strong>${escapeHtml(formatted.text)}</strong><small>${escapeHtml(formatted.suffix)}</small><p>${escapeHtml(widget.detail ?? "")}</p>${trend}</article>`;
+    const points = (result.series[0]?.points ?? []).slice(-60);
+    const numbers = points.map(([, point]) => point).filter((point): point is number => point !== null);
+    let trend = "";
+    if (numbers.length > 1) {
+      const low = Math.min(0, ...numbers);
+      const span = Math.max(...numbers) - low || 1;
+      const path = points.map(([, point], index) => {
+        const x = points.length > 1 ? (index / (points.length - 1)) * 100 : 50;
+        const y = 44 - (((point ?? low) - low) / span) * 40;
+        return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+      }).join(" ");
+      trend = `<svg class="stat-spark" viewBox="0 0 100 44" preserveAspectRatio="none"><path d="${path}"/></svg>`;
+    }
+    const empty = value === null ? `<p class="panel-state">No data</p>` : `<div class="stat-value"><strong>${escapeHtml(formatted.text)}</strong>${formatted.suffix ? `<em>${escapeHtml(formatted.suffix)}</em>` : ""}</div>${trend}`;
+    return `<article class="card stat-card" style="grid-column:${span}">${label}${note}${empty}</article>`;
   }
 
   if (widget.format === "targets") {
@@ -87,7 +119,7 @@ async function renderPrometheusWidget(widget: PrometheusWidget) {
 
   if (widget.format === "table") {
     const rows = result.series.map((entry) => {
-      const shown = formatValue(latestValue([entry]), widget.unit);
+      const shown = presentValue(latestValue([entry]), widget.unit, widget.unitSuffix);
       return `<div class="status"><i></i><span><b>${escapeHtml(seriesName(entry.labels, widget.labels))}</b><small>${escapeHtml(entry.labels.instance ?? "")}</small></span><em>${escapeHtml(`${shown.text} ${shown.suffix}`.trim())}</em></div>`;
     }).join("");
     return `<article class="card" style="grid-column:${span}">${label}${note}${rows || "<p>No series returned</p>"}</article>`;
@@ -102,7 +134,7 @@ async function renderPrometheusWidget(widget: PrometheusWidget) {
 
 function page(dashboard: Dashboard, content: string) {
   const accent = dashboard.theme.accent;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${escapeHtml(dashboard.title)} · Stratum</title><style>*{box-sizing:border-box}body{margin:0;background:#090c10;color:#eef1f4;font:15px system-ui,sans-serif;min-height:100vh;padding:clamp(14px,2vw,28px);--a:${accent}}header{width:100%;margin:0 0 20px;display:flex;justify-content:space-between;align-items:end}h1{font-size:clamp(30px,3vw,46px);letter-spacing:-.04em;margin:7px 0}p{color:#818895}label{font:11px ui-monospace;letter-spacing:.12em;color:#7f8792}header>span{font:11px ui-monospace;color:#69717c}main{width:100%;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px}.card{background:#12161c;border:1px solid #282d36;border-radius:10px;padding:18px;min-height:154px}.card>label{display:block;margin-bottom:18px}.metric strong,.chart strong{display:block;font:500 42px ui-monospace;letter-spacing:-.06em}.card p,.chart small{color:#7d8590}.status,.link{display:flex;align-items:center;gap:12px;border-top:1px solid #252a32;padding:10px 0}.status i{width:7px;height:7px;border-radius:50%;background:var(--a)}.status span,.link span{display:grid;gap:3px}.status small,.link small{font-size:11px;color:#737b86}.status em,.link em{margin-left:auto;font:11px ui-monospace;font-style:normal;color:#9ca3ac}.link{color:#eef1f4;text-decoration:none}.bars{height:150px;display:flex;align-items:end;gap:5px;margin-top:16px}.bars i{flex:1;background:color-mix(in srgb,var(--a) 55%,#1f252c);border-radius:3px 3px 0 0}.prose strong{font-size:20px}.prose p{max-width:75ch}iframe{display:block;border:0;width:100%;border-radius:8px;background:white}.search{max-width:900px;margin:18vh auto;text-align:center}.logo{width:46px;display:grid;gap:7px;margin:auto}.logo i{height:15px;background:var(--a);border-radius:3px}.logo i:last-child{width:65%;background:#8f7cff}.search h1{margin:24px}.search form{display:flex;background:#151920;border:1px solid #323844;border-radius:14px;padding:7px}.search input{flex:1;background:transparent;border:0;color:white;font-size:17px;padding:12px;outline:0}.search button{background:var(--a);border:0;border-radius:8px;padding:0 20px;font-weight:700}.search nav{display:flex;justify-content:center;gap:14px;margin-top:30px;flex-wrap:wrap}.search nav a{color:#cdd2d9;text-decoration:none;display:grid;gap:8px}.search nav b{width:54px;height:54px;border:1px solid #303641;background:#14181e;border-radius:12px;display:grid;place-content:center;font:13px ui-monospace}.search nav span{font-size:12px}.weather-published{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}.weather-hero{grid-column:span 3;background:#121820;border:1px solid #29333c;border-radius:12px;padding:28px;min-height:310px}.weather-hero .symbol{font-size:72px;line-height:1}.weather-hero strong{display:block;font-size:78px;letter-spacing:-.08em;margin-top:26px}.weather-hero p{font-size:18px}.forecast{grid-column:span 4;background:#12161c;border:1px solid #29333c;border-radius:12px;padding:20px}.forecast>div{display:grid;grid-template-columns:1fr 50px 1fr 80px;align-items:center;border-top:1px solid #252e36;min-height:52px}.forecast span{text-align:center;font-size:25px}.forecast small{color:#7e8993}.forecast b:last-child{text-align:right}@media(max-width:800px){main{display:block}.card{margin-bottom:10px}header{align-items:start}.search form{padding:5px}.search button{padding:0 14px}.weather-published{display:block}.weather-hero,.forecast{margin-bottom:10px}.forecast>div{grid-template-columns:70px 45px 1fr 68px}}</style></head><body>${content}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>${escapeHtml(dashboard.title)} · Stratum</title><style>*{box-sizing:border-box}body{margin:0;background:#090c10;color:#eef1f4;font:15px system-ui,sans-serif;min-height:100vh;padding:clamp(14px,2vw,28px);--a:${accent}}header{width:100%;margin:0 0 20px;display:flex;justify-content:space-between;align-items:end}h1{font-size:clamp(30px,3vw,46px);letter-spacing:-.04em;margin:7px 0}p{color:#818895}label{font:11px ui-monospace;letter-spacing:.12em;color:#7f8792}header>span{font:11px ui-monospace;color:#69717c}main{width:100%;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px}.card{background:#12161c;border:1px solid #282d36;border-radius:10px;padding:18px;min-height:154px}.section-head{grid-column:span 12;margin:14px 0 0;font:600 17px system-ui;color:#e8eaed}.section-head:first-child{margin-top:0}.stat-card{display:flex;flex-direction:column;min-height:118px}.stat-card .stat-value{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;margin:6px 0}.stat-card .stat-value strong{font:600 38px ui-monospace;letter-spacing:-.02em;color:#f5f7fa}.stat-card .stat-value em{font-style:normal;font-size:16px;color:#9aa4b2}.stat-spark{display:block;width:100%;height:44px;margin-top:auto}.stat-spark path{fill:none;stroke:#3d8bfd;stroke-width:1.5;vector-effect:non-scaling-stroke}.panel-state{display:grid;place-content:center;text-align:center;color:#6d7481;font-size:12px;min-height:60px}.stat-card>.panel-state{flex:1}.card>label{display:block;margin-bottom:18px}.metric strong,.chart strong{display:block;font:500 42px ui-monospace;letter-spacing:-.06em}.card p,.chart small{color:#7d8590}.status,.link{display:flex;align-items:center;gap:12px;border-top:1px solid #252a32;padding:10px 0}.status i{width:7px;height:7px;border-radius:50%;background:var(--a)}.status span,.link span{display:grid;gap:3px}.status small,.link small{font-size:11px;color:#737b86}.status em,.link em{margin-left:auto;font:11px ui-monospace;font-style:normal;color:#9ca3ac}.link{color:#eef1f4;text-decoration:none}.bars{height:150px;display:flex;align-items:end;gap:5px;margin-top:16px}.bars i{flex:1;background:color-mix(in srgb,var(--a) 55%,#1f252c);border-radius:3px 3px 0 0}.prose strong{font-size:20px}.prose p{max-width:75ch}iframe{display:block;border:0;width:100%;border-radius:8px;background:white}.search{max-width:900px;margin:18vh auto;text-align:center}.logo{width:46px;display:grid;gap:7px;margin:auto}.logo i{height:15px;background:var(--a);border-radius:3px}.logo i:last-child{width:65%;background:#8f7cff}.search h1{margin:24px}.search form{display:flex;background:#151920;border:1px solid #323844;border-radius:14px;padding:7px}.search input{flex:1;background:transparent;border:0;color:white;font-size:17px;padding:12px;outline:0}.search button{background:var(--a);border:0;border-radius:8px;padding:0 20px;font-weight:700}.search nav{display:flex;justify-content:center;gap:14px;margin-top:30px;flex-wrap:wrap}.search nav a{color:#cdd2d9;text-decoration:none;display:grid;gap:8px}.search nav b{width:54px;height:54px;border:1px solid #303641;background:#14181e;border-radius:12px;display:grid;place-content:center;font:13px ui-monospace}.search nav span{font-size:12px}.weather-published{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}.weather-hero{grid-column:span 3;background:#121820;border:1px solid #29333c;border-radius:12px;padding:28px;min-height:310px}.weather-hero .symbol{font-size:72px;line-height:1}.weather-hero strong{display:block;font-size:78px;letter-spacing:-.08em;margin-top:26px}.weather-hero p{font-size:18px}.forecast{grid-column:span 4;background:#12161c;border:1px solid #29333c;border-radius:12px;padding:20px}.forecast>div{display:grid;grid-template-columns:1fr 50px 1fr 80px;align-items:center;border-top:1px solid #252e36;min-height:52px}.forecast span{text-align:center;font-size:25px}.forecast small{color:#7e8993}.forecast b:last-child{text-align:right}@media(max-width:800px){main{display:block}.card{margin-bottom:10px}header{align-items:start}.search form{padding:5px}.search button{padding:0 14px}.weather-published{display:block}.weather-hero,.forecast{margin-bottom:10px}.forecast>div{grid-template-columns:70px 45px 1fr 68px}}</style></head><body>${content}</body></html>`;
 }
 
 const weatherSymbol=(code:number)=>code===0?"☀":code<=2?"⛅":code===3||code===45||code===48?"☁":code>=71&&code<=77?"❄":code>=95?"⚡":"☂";
@@ -125,6 +157,7 @@ export function createApp() {
   app.use(express.json({ limit: "256kb" }));
   app.get("/api/health", (_request, response) => response.json({ status: "ok" }));
   app.get("/api/config", (_request, response) => response.json({ embedOrigins, prometheus: { configured: prometheus.configured, url: process.env.PROMETHEUS_URL ?? null } }));
+  app.get("/api/release", async (_request, response, next) => { try { response.json({ release: await readRelease() }); } catch (error) { next(error); } });
   app.get("/api/prometheus/query", async (request, response, next) => {
     try {
       const query = String(request.query.query ?? "");

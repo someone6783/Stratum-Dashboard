@@ -11,6 +11,14 @@
   "revision": 0,
   "widgets": [
     {
+      "id": "s-overview",
+      "type": "section",
+      "title": "Overview",
+      "grid": {
+        "colSpan": 12
+      }
+    },
+    {
       "id": "targets-up",
       "type": "prometheus",
       "title": "Targets up",
@@ -18,7 +26,6 @@
       "format": "metric",
       "unit": "number",
       "detail": "scraping without error",
-      "accent": "lime",
       "range": "6h",
       "step": "1m",
       "grid": {
@@ -32,8 +39,6 @@
       "query": "100 * avg(up)",
       "format": "metric",
       "unit": "percent",
-      "detail": "of configured targets",
-      "accent": "lime",
       "range": "6h",
       "step": "1m",
       "grid": {
@@ -47,8 +52,7 @@
       "query": "sum(rate(prometheus_engine_query_duration_seconds_count[5m]))",
       "format": "metric",
       "unit": "number",
-      "detail": "queries per second",
-      "accent": "violet",
+      "unitSuffix": "/s",
       "range": "6h",
       "step": "1m",
       "grid": {
@@ -62,29 +66,10 @@
       "query": "prometheus_tsdb_storage_blocks_bytes",
       "format": "metric",
       "unit": "bytes",
-      "detail": "persisted blocks",
-      "accent": "blue",
       "range": "6h",
       "step": "5m",
       "grid": {
         "colSpan": 3
-      }
-    },
-    {
-      "id": "query-latency",
-      "type": "prometheus",
-      "title": "Query latency p50 by slice",
-      "query": "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}",
-      "format": "chart",
-      "unit": "seconds",
-      "detail": "per evaluation phase",
-      "labels": [
-        "slice"
-      ],
-      "range": "6h",
-      "step": "1m",
-      "grid": {
-        "colSpan": 8
       }
     },
     {
@@ -94,12 +79,59 @@
       "query": "prometheus_tsdb_head_series",
       "format": "metric",
       "unit": "number",
-      "detail": "in the TSDB head",
-      "accent": "violet",
       "range": "6h",
       "step": "5m",
       "grid": {
-        "colSpan": 4
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "http-rate",
+      "type": "prometheus",
+      "title": "HTTP request rate",
+      "query": "sum(rate(prometheus_http_requests_total[5m]))",
+      "format": "metric",
+      "unit": "number",
+      "unitSuffix": "/s",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "sample-rate",
+      "type": "prometheus",
+      "title": "Sample rate",
+      "query": "sum(rate(prometheus_engine_query_samples_total[5m]))",
+      "format": "metric",
+      "unit": "number",
+      "unitSuffix": "/s",
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "head-chunks",
+      "type": "prometheus",
+      "title": "Head chunks",
+      "query": "prometheus_tsdb_head_chunks",
+      "format": "metric",
+      "unit": "number",
+      "range": "6h",
+      "step": "5m",
+      "grid": {
+        "colSpan": 3
+      }
+    },
+    {
+      "id": "s-targets",
+      "type": "section",
+      "title": "Targets",
+      "grid": {
+        "colSpan": 12
       }
     },
     {
@@ -142,7 +174,7 @@
       "query": "sum by (job) (rate(process_cpu_seconds_total[5m]))",
       "format": "table",
       "unit": "number",
-      "detail": "cores in use",
+      "unitSuffix": "cores",
       "labels": [
         "job"
       ],
@@ -153,32 +185,41 @@
       }
     },
     {
+      "id": "s-prometheus",
+      "type": "section",
+      "title": "Prometheus",
+      "grid": {
+        "colSpan": 12
+      }
+    },
+    {
+      "id": "query-latency",
+      "type": "prometheus",
+      "title": "Query latency p50 by slice",
+      "query": "prometheus_engine_query_duration_seconds{quantile=\"0.5\"}",
+      "format": "chart",
+      "unit": "seconds",
+      "labels": [
+        "slice"
+      ],
+      "range": "6h",
+      "step": "1m",
+      "grid": {
+        "colSpan": 6
+      }
+    },
+    {
       "id": "samples",
       "type": "prometheus",
       "title": "Samples ingested",
       "query": "sum(rate(prometheus_engine_query_samples_total[5m]))",
       "format": "chart",
       "unit": "number",
-      "detail": "samples per second",
+      "unitSuffix": "/s",
       "range": "6h",
       "step": "1m",
       "grid": {
-        "colSpan": 8
-      }
-    },
-    {
-      "id": "http-rate",
-      "type": "prometheus",
-      "title": "HTTP request rate",
-      "query": "sum(rate(prometheus_http_requests_total[5m]))",
-      "format": "metric",
-      "unit": "number",
-      "detail": "requests per second",
-      "accent": "blue",
-      "range": "6h",
-      "step": "1m",
-      "grid": {
-        "colSpan": 4
+        "colSpan": 6
       }
     },
     {

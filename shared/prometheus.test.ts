@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactNumber, formatBytes, formatDuration, formatSeconds, formatValue, latestValue, parseDuration, seriesName, toSparkline, type PromSeries } from "./prometheus.js";
+import { axisTicks, compactNumber, formatBytes, formatDuration, formatSeconds, formatValue, latestValue, parseDuration, presentValue, seriesName, toSparkline, type PromSeries } from "./prometheus.js";
 
 const series = (values: (number | null)[]): PromSeries => ({ labels: {}, points: values.map((value, index) => [1_700_000_000_000 + index * 60_000, value]), stale: false });
 
@@ -51,5 +51,26 @@ describe("prometheus helpers", () => {
     expect(toSparkline(series([7, 7, 7]).points)).toEqual([50, 50, 50]);
     expect(toSparkline(series([null, 4]).points)).toEqual([0, 50]);
     expect(toSparkline([])).toEqual([]);
+  });
+
+  it("spaces axis ticks on 1/2/5 boundaries like a monitoring UI", () => {
+    expect(axisTicks(0, 100)).toEqual([0, 20, 40, 60, 80, 100]);
+    expect(axisTicks(0, 9)).toEqual([0, 2, 4, 6, 8]);
+    expect(axisTicks(0, 1)).toEqual([0, 0.2, 0.4, 0.6, 0.8, 1]);
+    expect(axisTicks(5, 5)).toEqual([5]);
+    expect(axisTicks(Number.NaN, 10)).toEqual([Number.NaN]);
+  });
+
+  it("appends unit suffixes, keeping them tight against a base unit", () => {
+    expect(presentValue(10_752, "bytes", "/s")).toEqual({ text: "10.5", suffix: "KiB/s" });
+    expect(presentValue(2.07, "number", "/s")).toEqual({ text: "2.07", suffix: "/s" });
+    expect(presentValue(45, "percent")).toEqual({ text: "45", suffix: "%" });
+    expect(presentValue(null, "number", "/s")).toEqual({ text: "—", suffix: "/s" });
+  });
+
+  it("keeps byte formatting safe below one byte", () => {
+    expect(formatBytes(0.0823)).toEqual({ text: "0.08", suffix: "B" });
+    expect(formatBytes(0)).toEqual({ text: "0.00", suffix: "B" });
+    expect(formatBytes(-2048)).toEqual({ text: "-2.00", suffix: "KiB" });
   });
 });

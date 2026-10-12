@@ -37,7 +37,7 @@ npm install
 PROMETHEUS_URL=http://prometheus.example.com:9090 npm run dev
 ```
 
-The workspace opens at `http://localhost:5173`; Vite forwards API and published-view requests to the backend on port `8787`.
+The workspace opens at `http://localhost:5173`; Vite forwards API and published-view requests to the backend on port `8787`. The bottom of the sidebar shows the date and short SHA of the newest commit, read from `GET /api/release`. That route shells out to `git`, so it reports no release when the checkout has no `.git` directory, as in the production image.
 
 ## Prometheus metrics
 
@@ -85,6 +85,7 @@ Add a panel through the dashboard JSON:
 | `query` | Any PromQL expression, including ranges such as `[5m]` |
 | `format` | `metric`, `chart`, `table`, or `targets` |
 | `unit` | `number`, `bytes`, `percent`, `seconds`, `duration`, or `text` |
+| `unitSuffix` | Trailing suffix appended after the unit, e.g. `/s` |
 | `range` / `step` | Prometheus durations like `6h` and `1m`; capped at 30d and 15s |
 | `refreshMs` | Client refresh interval, default 30000, minimum 5000 |
 | `labels` | Label keys used for table rows, target names, and chart legends |
@@ -131,7 +132,27 @@ A complete importable definition is available in [`examples/overview.json`](exam
 | `links` | Bookmarks and shortcuts | `items[]` |
 | `html` | Sanitized internal markup | `html` |
 | `embed` | Sandboxed external page | `url`, `height` |
+| `section` | Full-width heading above a group of panels | `title` |
 | `prometheus` | Live PromQL metric, chart, table, or target list | `query`, `format`, `unit` |
+
+Use `grid.colSpan` from 1–12 to size a widget. On small screens, cards stack automatically. Change `theme.accent` to any six-digit hex color.
+
+## Panel layout
+
+Panels follow the conventions of monitoring UIs, so the JSON reads like the screen it produces:
+
+- **`section`** is a full-width heading. Interleave it with panels to group them.
+- **`format: "metric"`** renders a centred value with a unit suffix and a sparkline anchored to the bottom edge. Set `unit` for the base unit and `unitSuffix` for a trailing rate such as `/s`, which together produce values like `10.5 KiB/s`.
+- **`format: "chart"`** renders one line per series with a value axis on the left, time on the bottom, dashed gridlines, and a legend underneath. Series use the default blue, green, yellow, red, purple, cyan palette in order.
+- **`format: "targets"`** maps the sample value to scrape health, which suits `up`.
+- Empty results render as `No data` instead of an empty card.
+
+A chart panel takes a single PromQL expression, so label multiple series inside the query:
+
+```promql
+label_replace(sum(rate(http_requests_total[5m])), "dir", "Download", "", "")
+  or label_replace(sum(rate(http_errors_total[5m])), "dir", "Errors", "", "")
+```
 
 Use `grid.colSpan` from 1–12 to size a widget. On small screens, cards stack automatically. Change `theme.accent` to any six-digit hex color.
 
@@ -175,6 +196,7 @@ The browser retrieves current, hourly, and seven-day forecast data directly from
 | `GET` | `/api/dashboards/:id/export` | Download a definition |
 | `DELETE` | `/api/dashboards/:id` | Delete a dashboard |
 | `GET` | `/api/config` | Embed origins and datasource status |
+| `GET` | `/api/release` | Date, short SHA, and subject of the newest commit |
 | `GET` | `/api/prometheus/query` | Proxied PromQL range query |
 | `GET` | `/published/:id` | Render the fast HTML view |
 

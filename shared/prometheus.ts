@@ -50,7 +50,7 @@ const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
 export function formatBytes(value: number): { text: string; suffix: string } {
   const magnitude = Math.abs(value);
-  const exponent = Math.min(Math.floor(Math.log(magnitude || 1) / Math.log(1024)), BYTE_UNITS.length - 1);
+  const exponent = magnitude > 0 ? Math.min(Math.max(Math.floor(Math.log(magnitude) / Math.log(1024)), 0), BYTE_UNITS.length - 1) : 0;
   const scaled = value / Math.pow(1024, exponent);
   const digits = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
   return { text: scaled.toFixed(digits), suffix: BYTE_UNITS[exponent] };
@@ -86,6 +86,26 @@ export function formatValue(value: number | null, unit: PromUnit): { text: strin
   if (unit === "duration") return { text: formatDuration(value), suffix: "" };
   if (unit === "text") return { text: String(value), suffix: "" };
   return { text: compactNumber(value), suffix: "" };
+}
+
+/** Formats a value and appends a panel-authored suffix, e.g. "10.7" + "KiB" + "/s". */
+export function presentValue(value: number | null, unit: PromUnit, unitSuffix?: string): { text: string; suffix: string } {
+  const base = formatValue(value, unit);
+  if (!unitSuffix) return base;
+  const joined = base.suffix && unitSuffix.startsWith("/") ? base.suffix + unitSuffix : [base.suffix, unitSuffix].filter(Boolean).join(" ");
+  return { text: base.text, suffix: joined };
+}
+
+/** Rounds tick values to a 1/2/5/10 step near the ideal spacing, the way monitoring UIs space gridlines. */
+export function axisTicks(min: number, max: number, count = 5): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return [min];
+  const rawStep = (max - min) / (count - 1);
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const normalized = rawStep / magnitude;
+  const step = ([1, 2, 5, 10].reduce((best, candidate) => Math.abs(candidate - normalized) < Math.abs(best - normalized) ? candidate : best)) * magnitude;
+  const ticks: number[] = [];
+  for (let value = Math.ceil(min / step) * step; value <= max + step * 1e-9; value += step) ticks.push(Number(value.toFixed(10)));
+  return ticks;
 }
 
 /** Builds a human label for a series from the label keys the widget asked for. */
