@@ -50,18 +50,20 @@ async function readDashboards(): Promise<Dashboard[]> {
 }
 
 /** Reads the newest commit so the sidebar can show a release date. Absent in images built without git metadata. */
-let releaseCache: { date: string; sha: string; subject: string } | null | undefined;
+let releaseCache: { value: { date: string; sha: string; subject: string } | null; at: number } | undefined;
 async function readRelease() {
-  if (releaseCache !== undefined) return releaseCache;
+  if (releaseCache && Date.now() - releaseCache.at < 60_000) return releaseCache.value;
+  let value: { date: string; sha: string; subject: string } | null = null;
   try {
     await fs.access(path.join(root, ".git"));
     const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%cI%n%h%n%s"], { cwd: root, timeout: 3000 });
     const [date, sha, subject] = stdout.split("\n");
-    releaseCache = date && sha ? { date, sha, subject: subject ?? "" } : null;
+    if (date && sha) value = { date, sha, subject: subject ?? "" };
   } catch {
-    releaseCache = null;
+    value = null;
   }
-  return releaseCache;
+  releaseCache = { value, at: Date.now() };
+  return value;
 }
 
 function isAllowedEmbed(url: string) { try { return embedOrigins.includes("*") || embedOrigins.includes(new URL(url).origin); } catch { return false; } }
