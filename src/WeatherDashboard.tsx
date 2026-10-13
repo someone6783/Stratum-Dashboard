@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Cloud, CloudFog, CloudLightning, CloudRain, CloudSun, Droplets, Eye, Gauge, MapPin, Navigation, RefreshCw, Search, Snowflake, Sun, Sunrise, Sunset, Thermometer, Umbrella, Wind } from "lucide-react";
 import type { Dashboard } from "../shared/dashboard";
-import { axisTicks } from "../shared/prometheus";
+import { barsFor, areaPath, dayName, GEOMETRY, linePath, rainTint, scaleDomain, timeAxis, toPoints, yPosition, type AxisLabel, type Point, type Scale } from "../shared/weather";
 
 type WeatherResponse = {
   timezone_abbreviation: string;
   current: { time:string; temperature_2m:number; apparent_temperature:number; relative_humidity_2m:number; precipitation:number; weather_code:number; wind_speed_10m:number; wind_direction_10m:number; surface_pressure:number; is_day:number };
   current_units: { temperature_2m:string; wind_speed_10m:string; precipitation:string; wind_direction_10m:string; surface_pressure:string };
-  hourly: { time:string[]; temperature_2m:number[]; precipitation_probability:number[]; weather_code:number[]; apparent_temperature:number[]; relative_humidity_2m:number[]; wind_speed_10m:number[] };
+  hourly: { time:string[]; temperature_2m:number[]; precipitation_probability:number[]; precipitation:number[]; weather_code:number[]; apparent_temperature:number[]; relative_humidity_2m:number[]; wind_speed_10m:number[]; wind_gusts_10m:number[]; uv_index:number[]; visibility:number[] };
   daily: { time:string[]; weather_code:number[]; temperature_2m_max:number[]; temperature_2m_min:number[]; sunrise:string[]; sunset:string[]; precipitation_probability_max:number[]; precipitation_sum:number[]; wind_speed_10m_max:number[]; wind_gusts_10m_max:number[]; uv_index_max:number[] };
 };
 
@@ -24,89 +24,96 @@ function WeatherGlyph({code,size=28,day=true}:{code:number;size?:number;day?:boo
   return <CloudRain {...props}/>;
 }
 
-const dayLabel=(value:string,index:number)=>index===0?"Today":new Date(`${value}T12:00:00`).toLocaleDateString(undefined,{weekday:"short"});
 const timeLabel=(value:string)=>new Date(value).toLocaleTimeString(undefined,{hour:"numeric"});
 
 const COMPASS=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
 const compass=(degrees:number)=>COMPASS[Math.round(((degrees%360)+360)%360/22.5)%16];
 
-/** Rain, drizzle, and snow thresholds in mm, used to colour the daily precipitation bars. */
-const rainTint=(mm:number)=>mm>=10?"#4a9eff":mm>=4?"#3d8bfd":mm>=1?"#39c5cf":mm>0?"#3fb950":"#3a4048";
+/** Formats an hour count as "24 HOURS" / "3 DAYS" for the chart headings. */
+const spanLabel=(hours:number)=>hours>=168?"7 DAYS":hours>=72?`${Math.round(hours/24)} DAYS`:`${hours} HOURS`;
 
-type ChartPoint = { x:number; value:number|null };
+type Series={name:string;color:string;points:Point[]};
 
-/** Positions values along the x axis; the chart owns vertical scaling. */
-function buildSeries(values:(number|null)[], width=100):ChartPoint[] {
-  return values.map((value,index)=>({ x:values.length>1?(index/(values.length-1))*width:width/2, value }));
-}
-
-/** Time series panel: value axis on the left, time along the bottom, dashed gridlines, legend beneath. */
-function WeatherChart({title,subtitle,series,xLabels,format}:{title:string;subtitle:string;series:{name:string;color:string;points:ChartPoint[]}[];xLabels:string[];format:(value:number)=>string}) {
-  const all=series.flatMap((entry)=>entry.points.map((point)=>point.value)).filter((value):value is number=>value!==null);
-  const rawMin=all.length?Math.min(...all):0, rawMax=all.length?Math.max(...all):1;
-  const min=all.every((value)=>value>=0)?0:rawMin, max=rawMax===min?min+Math.abs(min||1):rawMax, span=max-min||1;
-  const yOf=(value:number)=>8+(180-((value-min)/span)*180);
-  const steps=axisTicks(min,max);
-  const path=(points:ChartPoint[])=>{
-    let out="",open=false;
-    for(const point of points){ if(point.value===null){open=false;continue;} out+=`${open?"L":"M"}${point.x.toFixed(2)} ${yOf(point.value).toFixed(2)}`; open=true; }
-    return out;
+/** Card shell shared by every chart: heading, value axis on the left, time along the bottom, legend beneath. */
+function ChartCard({title,subtitle,summary,series,labels,scale,kind,unit,children,foot}:{title:string;subtitle:string;summary?:string;series?:Series[];labels?:AxisLabel[];scale:Scale;kind:"temperature"|"percent"|"mm"|"plain"|"speed";unit?:string;children:ReactNode;foot?:ReactNode}) {
+  const format=(value:number)=>{
+    if(kind==="percent")return `${Math.round(value)}%`;
+    if(kind==="temperature")return `${Math.round(value)}°`;
+    if(kind==="mm")return value>=10?value.toFixed(0):value.toFixed(1);
+    if(kind==="speed")return unit?`${Math.round(value)} ${unit}`:`${Math.round(value)}`;
+    return Number.isInteger(value)?`${value}`:value.toFixed(1);
   };
-  const primary=series[0]?.points??[];
-  const band=primary.length>1?`${primary.map((point,index)=>`${index===0?"M":"L"}${point.x.toFixed(2)} ${point.value===null?yOf(min):yOf(point.value).toFixed(2)}`).join(" ")} L${primary[primary.length-1].x.toFixed(2)} 188 L${primary[0].x.toFixed(2)} 188 Z`:null;
   return <article className="weather-chart">
-    <div className="weather-card-head"><div><p>{subtitle}</p><h2>{title}</h2></div></div>
+    <div className="weather-card-head"><div><p>{subtitle}</p><h2>{title}</h2></div>{summary&&<span className="chart-summary">{summary}</span>}</div>
     <div className="ts-chart">
-      <div className="ts-yaxis" style={{height:196}}>{steps.map((step)=><span key={step} style={{bottom:`${((step-min)/span)*100}%`}}>{format(step)}</span>)}</div>
+      <div className="ts-yaxis">{scale.ticks.map((tick)=><span key={tick} style={{bottom:`${(yPosition(tick,scale)/GEOMETRY.height)*100}%`}}>{format(tick)}</span>)}</div>
       <div className="ts-main">
-        <div className="ts-plot" style={{height:196}}>
-          <svg viewBox="0 0 100 196" preserveAspectRatio="none" role="img" aria-label={`${subtitle.toLowerCase()} chart`}>
-            {steps.map((step)=><line key={step} className="ts-grid" x1="0" y1={yOf(step)} x2="100" y2={yOf(step)}/>)}
-            {band&&<path className="ts-band" style={{fill:series[0].color}} d={band}/>}
-            {series.map((entry)=><path key={entry.name} className="ts-line" style={{stroke:entry.color}} d={path(entry.points)}/>)}
+        <div className="ts-plot">
+          <svg viewBox={`0 0 ${GEOMETRY.width} ${GEOMETRY.height}`} preserveAspectRatio="none" role="img" aria-label={`${subtitle.toLowerCase()} chart`}>
+            {scale.ticks.map((tick)=><line key={tick} className="ts-grid" x1="0" y1={yPosition(tick,scale)} x2={GEOMETRY.width} y2={yPosition(tick,scale)}/>)}
+            {children}
           </svg>
         </div>
-        <div className="ts-xaxis">{xLabels.map((label,index)=><span key={index}>{label}</span>)}</div>
+        {labels&&<div className="ts-xaxis">{labels.map((entry)=><span key={entry.index}>{entry.label}</span>)}</div>}
       </div>
     </div>
-    <footer className="ts-legend">{series.map((entry)=><span key={entry.name}><i style={{background:entry.color}}/>{entry.name}</span>)}</footer>
+    {series&&series.length>0&&<footer className="ts-legend">{series.map((entry)=><span key={entry.name}><i style={{background:entry.color}}/>{entry.name}</span>)}</footer>}
+    {foot}
   </article>;
 }
 
-/** Daily temperature range bars with highs, lows, and rainfall, spanning the whole week. */
-function DailyRangeChart({days,unit,rainUnit}:{days:{date:string;max:number;min:number;rain:number;probability:number}[];unit:string;rainUnit:string}) {
-  const highs=days.map((day)=>day.max), lows=days.map((day)=>day.min);
-  const top=Math.max(...highs,1), bottom=Math.min(...lows,0), span=top-bottom||1;
-  const largest=Math.max(...days.map((day)=>day.rain),0.0001);
-  return <article className="weather-chart">
-    <div className="weather-card-head"><div><p>7-DAY RANGE</p><h2>Highs, lows and rainfall</h2></div></div>
-    <div className="ts-chart">
-      <div className="ts-yaxis" style={{height:196}}>{axisTicks(bottom,top).map((step)=><span key={step} style={{bottom:`${((step-bottom)/span)*100}%`}}>{Math.round(step)}{unit}</span>)}</div>
-      <div className="ts-main">
-        <div className="ts-plot" style={{height:196}}>
-          <svg viewBox="0 0 100 196" preserveAspectRatio="none" role="img" aria-label="Daily temperature range chart">
-            {axisTicks(bottom,top).map((step)=>{const y=((step-bottom)/span)*180+8;return <line key={step} className="ts-grid" x1="0" y1={y} x2="100" y2={y}/>;})}
-            {days.map((day,index)=>{
-              const x=days.length>1?(index/(days.length-1))*100:50, width=100/days.length*0.34;
-              const yMax=180-((day.max-bottom)/span)*180+8, yMin=180-((day.min-bottom)/span)*180+8;
-              return <g key={day.date} className="range-bar"><rect x={x-width/2} y={yMax} width={width} height={Math.max(1,yMin-yMax)} rx={1}/><circle cx={x} cy={yMax} r={1.1} className="range-max"/><circle cx={x} cy={yMin} r={1.1} className="range-min"/></g>;
-            })}
-          </svg>
-        </div>
-        <div className="ts-xaxis">{days.map((day,index)=><span key={day.date}>{index===0?"Today":new Date(`${day.date}T12:00:00`).toLocaleDateString(undefined,{weekday:"short"})}</span>)}</div>
-      </div>
-    </div>
-    <footer className="rain-bars">{days.map((day)=><span key={day.date} title={`${day.rain} ${rainUnit} · ${day.probability}%`}><i style={{height:`${Math.max(3,(day.rain/largest)*34)}px`,background:rainTint(day.rain)}}/><em>{day.rain?`${day.rain}`:""}</em></span>)}</footer>
-  </article>;
+/** Filled line series with an optional gradient band under the primary line. */
+function LineSeries({series,scale}:{series:Series[];scale:Scale}) {
+  return <>{series.some((entry)=>entry.points.length>1)&&series[0].points.filter((point)=>point.value!==null).length>1&&<path className="ts-band" style={{fill:series[0].color}} d={areaPath(series[0].points,scale)}/>}{series.map((entry)=><path key={entry.name} className="ts-line" style={{stroke:entry.color}} d={linePath(entry.points,scale)}/>)}</>;
+}
+
+/** Horizontal rain probability / UV risk bands drawn behind a series. */
+function riskBands(scale:Scale,edges:{at:number;color:string}[]) {
+  const sorted=[...edges].sort((a,b)=>a.at-b.at);
+  return sorted.map((edge,index)=>{const next=sorted[index+1]?.at??scale.max;const top=yPosition(next,scale),bottom=yPosition(edge.at,scale);return <rect key={edge.at} className="ts-risk" style={{fill:edge.color}} x="0" y={top} width={GEOMETRY.width} height={Math.max(0,bottom-top)}/>;});
+}
+
+/** Sun's path between sunrise and sunset with the current position marked, so the daylight panel earns its width. */
+function DaylightArc({sunrise,sunset,now}:{sunrise:string;sunset:string;now:string}) {
+  const at=(value:string)=>{const date=new Date(value);return Number.isNaN(date.getTime())?0:date.getTime();};
+  const rise=at(sunrise), set=at(sunset), current=at(now);
+  const daylight=Math.max(set-rise,1);
+  const progress=Math.min(Math.max((current-rise)/daylight,0),1);
+  const x=4+progress*92, y=46-Math.sin(progress*Math.PI)*34;
+  const night=current<rise||current>set;
+  return <div className="sun-arc">
+    <svg viewBox="0 0 100 50" preserveAspectRatio="none" role="img" aria-label="Sunrise to sunset arc">
+      <path className="arc-horizon" d="M2 46 H98"/>
+      <path className="arc-path" d="M4 46 A 46 40 0 0 1 96 46"/>
+      <path className="arc-done" d="M4 46 A 46 40 0 0 1 96 46" pathLength={1} strokeDasharray={`${progress} 1`}/>
+      {night?<circle className="arc-moon" cx={x} cy={y} r={2.4}/>:<circle className="arc-sun" cx={x} cy={y} r={3}/>}
+    </svg>
+    <div className="arc-ends"><span>SUNRISE<br/><b>{timeLabel(sunrise)}</b></span><span className="arc-mid">{night?"Night":"Daylight"} {Math.round(progress*100)}%</span><span>SUNSET<br/><b>{timeLabel(sunset)}</b></span></div>
+  </div>;
+}
+
+/** Daily high/low range bars, scaled to the data instead of a fixed zero baseline. */
+function DailyRangeChart({days,unit,scale,labels}:{days:{date:string;max:number;min:number}[];unit:string;scale:Scale;labels:AxisLabel[]}) {
+  const highs=days.map((day)=>day.max),lows=days.map((day)=>day.min);
+  return <ChartCard title="Highs and lows" subtitle="7-DAY TEMPERATURE" scale={scale} kind="temperature" unit={unit} labels={labels} series={[{name:"Daily high",color:"#3d8bfd",points:[]},{name:"Daily low",color:"#ff9f43",points:[]}]}>
+    {days.map((day,index)=>{
+      const slot=GEOMETRY.width/days.length;
+      const x=index*slot+slot/2;
+      const width=slot*0.36;
+      const top=yPosition(day.max,scale), bottom=yPosition(day.min,scale);
+      return <g key={day.date} className="range-bar"><rect x={x-width/2} y={top} width={width} height={Math.max(1,bottom-top)} rx={1}/><circle cx={x} cy={top} r={1.15} className="range-max"/><circle cx={x} cy={bottom} r={1.15} className="range-min"/></g>;
+    })}
+  </ChartCard>;
 }
 
 export function WeatherDashboard({dashboard}:{dashboard:Dashboard}) {
   const base=dashboard.weather!;
   const [place,setPlace]=useState(base); const [query,setQuery]=useState(""); const [data,setData]=useState<WeatherResponse>();
   const [error,setError]=useState<string>(); const [loading,setLoading]=useState(true); const [updated,setUpdated]=useState<Date>();
+  const [span,setSpan]=useState<48|168>(48);
   const load=useCallback(async()=>{
     setLoading(true); setError(undefined);
-    const params=new URLSearchParams({latitude:String(place.latitude),longitude:String(place.longitude),current:"temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,is_day",hourly:"temperature_2m,apparent_temperature,precipitation_probability,weather_code,relative_humidity_2m,wind_speed_10m",daily:"weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max",timezone:"auto",forecast_days:"7",temperature_unit:place.temperatureUnit});
+    const params=new URLSearchParams({latitude:String(place.latitude),longitude:String(place.longitude),current:"temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,is_day",hourly:"temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,relative_humidity_2m,wind_speed_10m,wind_gusts_10m,uv_index,visibility",daily:"weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max,uv_index_clear_sky_max",timezone:"auto",forecast_days:"7",temperature_unit:place.temperatureUnit});
     try { const response=await fetch(`https://api.open-meteo.com/v1/forecast?${params}`,{signal:AbortSignal.timeout(10_000)}); if(!response.ok) throw new Error("Forecast service returned an error"); setData(await response.json()); setUpdated(new Date()); }
     catch(reason){setError(reason instanceof Error?reason.message:"Weather data is unavailable");}
     finally{setLoading(false);}
@@ -118,44 +125,89 @@ export function WeatherDashboard({dashboard}:{dashboard:Dashboard}) {
   if(!data&&loading)return <div className="weather-state"><RefreshCw className="spin"/><p>Loading live forecast for {place.location}…</p></div>;
   if(!data)return <div className="weather-state"><CloudRain/><h2>Forecast unavailable</h2><p>{error}</p><button onClick={load}>Try again</button></div>;
   const unit=data.current_units.temperature_2m;
+  const speed=data.current_units.wind_speed_10m;
+  const slice=<T,>(values:T[])=>values.slice(currentHour,currentHour+span) as T[];
+  const labels=timeAxis(slice(data.hourly.time),span>=168?7:8);
+  const rangeLabel=span>=168?"Next 7 days":`Next ${span/24} days`;
+  const temperatureScale=scaleDomain([...slice(data.hourly.temperature_2m),...slice(data.hourly.apparent_temperature)]);
+  const rainScale=scaleDomain(slice(data.hourly.precipitation_probability),{fixed:[0,100]});
+  const mmScale=scaleDomain(slice(data.hourly.precipitation),{zero:true});
+  const windScale=scaleDomain([...slice(data.hourly.wind_speed_10m),...slice(data.hourly.wind_gusts_10m)],{zero:true});
+  const humidityScale=scaleDomain(slice(data.hourly.relative_humidity_2m),{fixed:[0,100]});
+  const uvScale=scaleDomain(slice(data.hourly.uv_index),{zero:true});
+  const dailyScale=scaleDomain([...data.daily.temperature_2m_max,...data.daily.temperature_2m_min]);
+  const dailyWindScale=scaleDomain([...data.daily.wind_speed_10m_max,...data.daily.wind_gusts_10m_max],{zero:true});
+  const dailyRainScale=scaleDomain(data.daily.precipitation_probability_max,{fixed:[0,100]});
+  const dailyUvScale=scaleDomain(data.daily.uv_index_max,{zero:true});
+  const dailyLabels=data.daily.time.map((date,index)=>({index,label:dayName(date,index)}));
+  const dailyRainBars=barsFor(data.daily.precipitation_probability_max,dailyRainScale);
+  const days=data.daily.time.map((date,index)=>({date,max:data.daily.temperature_2m_max[index],min:data.daily.temperature_2m_min[index],rain:data.daily.precipitation_sum[index],probability:data.daily.precipitation_probability_max[index]}));
+  const dailyMmScale=scaleDomain(data.daily.precipitation_sum,{zero:true});
+  const dailyMmBars=barsFor(data.daily.precipitation_sum,dailyMmScale);
+  const summary=(values:number[],formatter:(value:number)=>string)=>values.length?`${formatter(Math.min(...values))} – ${formatter(Math.max(...values))}`:"";
+  const tempFormatter=(value:number)=>`${Math.round(value)}°`;
   return <section className="weather-workspace">
     <header className="weather-topbar"><div><p className="weather-kicker">LIVE FORECAST</p><h1>{place.location}</h1><p><MapPin size={13}/>{place.latitude.toFixed(2)}°, {place.longitude.toFixed(2)}° · {data.timezone_abbreviation}</p></div><div className="weather-tools"><form onSubmit={findLocation}><Search size={16}/><input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="Change location" aria-label="Search location"/></form><button onClick={load} title="Refresh forecast"><RefreshCw size={17}/><span>{loading?"Refreshing":"Refresh"}</span></button></div></header>
     {error&&<div className="weather-warning">Latest refresh failed. Showing the most recent forecast.</div>}
     <div className="weather-grid">
       <article className="weather-now"><div className="weather-orbit"><WeatherGlyph code={data.current.weather_code} size={92} day={Boolean(data.current.is_day)}/></div><div className="weather-current-copy"><p>{descriptions[data.current.weather_code]??"Current conditions"}</p><strong>{Math.round(data.current.temperature_2m)}<sup>{unit}</sup></strong><span>Feels like {Math.round(data.current.apparent_temperature)}{unit}</span></div><div className="weather-facts">
         <div><Droplets/><span>Humidity</span><b>{data.current.relative_humidity_2m}%</b></div>
-        <div><Wind/><span>Wind</span><b>{Math.round(data.current.wind_speed_10m)} {data.current_units.wind_speed_10m} {compass(data.current.wind_direction_10m)}</b></div>
+        <div><Wind/><span>Wind</span><b>{Math.round(data.current.wind_speed_10m)} {speed} {compass(data.current.wind_direction_10m)}</b></div>
         <div><CloudRain/><span>Rain</span><b>{data.current.precipitation} {data.current_units.precipitation}</b></div>
         <div><Gauge/><span>Pressure</span><b>{Math.round(data.current.surface_pressure)} {data.current_units.surface_pressure}</b></div>
         <div><Thermometer/><span>Today's high</span><b>{Math.round(data.daily.temperature_2m_max[todayIndex])}{unit}</b></div>
         <div><Thermometer/><span>Today's low</span><b>{Math.round(data.daily.temperature_2m_min[todayIndex])}{unit}</b></div>
       </div></article>
-      <article className="weather-hourly"><div className="weather-card-head"><div><p>NEXT 12 HOURS</p><h2>Through the day</h2></div><span>{updated?`Updated ${updated.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`:"Live"}</span></div><div className="hour-strip">{data.hourly.time.slice(currentHour,currentHour+12).map((time,index)=>{const at=currentHour+index;return <div className={index===0?"current":""} key={time}><time>{index===0?"Now":timeLabel(time)}</time><WeatherGlyph code={data.hourly.weather_code[at]} size={25}/><b>{Math.round(data.hourly.temperature_2m[at])}°</b><small>{data.hourly.precipitation_probability[at]}%</small></div>})}</div></article>
-      <article className="weather-week"><div className="weather-card-head"><div><p>7-DAY OUTLOOK</p><h2>The week ahead</h2></div><Navigation size={18}/></div><div className="week-list">{data.daily.time.map((date,index)=><div key={date}><b>{dayLabel(date,index)}</b><span className="condition"><WeatherGlyph code={data.daily.weather_code[index]} size={24}/>{descriptions[data.daily.weather_code[index]]??"Mixed"}</span><span className="rain"><Droplets size={14}/>{data.daily.precipitation_probability_max[index]}%</span><span className="temps"><strong>{Math.round(data.daily.temperature_2m_max[index])}°</strong><small>{Math.round(data.daily.temperature_2m_min[index])}°</small></span></div>)}</div></article>
+      <article className="weather-hourly"><div className="weather-card-head"><div><p>NEXT 24 HOURS</p><h2>Through the day</h2></div><span>{updated?`Updated ${updated.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`:"Live"}</span></div><div className="hour-strip">{data.hourly.time.slice(currentHour,currentHour+24).map((time,index)=>{const at=currentHour+index;return <div className={index===0?"current":""} key={time}><time>{index===0?"Now":timeLabel(time)}</time><WeatherGlyph code={data.hourly.weather_code[at]} size={25}/><b>{Math.round(data.hourly.temperature_2m[at])}°</b><small>{data.hourly.precipitation_probability[at]}%</small></div>})}</div></article>
+      <article className="weather-week"><div className="weather-card-head"><div><p>7-DAY OUTLOOK</p><h2>The week ahead</h2></div><Navigation size={18}/></div><div className="week-list">{data.daily.time.map((date,index)=><div key={date}><b>{dayName(date,index)}</b><span className="condition"><WeatherGlyph code={data.daily.weather_code[index]} size={24}/>{descriptions[data.daily.weather_code[index]]??"Mixed"}</span><span className="rain"><Droplets size={14}/>{data.daily.precipitation_probability_max[index]}%</span><span className="temps"><strong>{Math.round(data.daily.temperature_2m_max[index])}°</strong><small>{Math.round(data.daily.temperature_2m_min[index])}°</small></span></div>)}</div></article>
       <aside className="weather-sun">
-        <div><Sunrise/><span>Sunrise</span><b>{timeLabel(data.daily.sunrise[0])}</b></div><i/>
-        <div><Sunset/><span>Sunset</span><b>{timeLabel(data.daily.sunset[0])}</b></div>
-        <div><Umbrella/><span>Rain today</span><b>{data.daily.precipitation_sum[0]} mm</b></div>
-        <div><Eye/><span>UV index</span><b>{Math.round(data.daily.uv_index_max[0])}</b></div>
-        <div><Wind/><span>Max wind</span><b>{Math.round(data.daily.wind_speed_10m_max[0])} km/h</b></div>
-        <div><Wind/><span>Gusts</span><b>{Math.round(data.daily.wind_gusts_10m_max[0])} km/h</b></div>
-        <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Data by Open-Meteo</a>
+        <div className="weather-card-head"><div><p>SUN &amp; DAYLIGHT</p><h2>Today at a glance</h2></div><Sun size={18}/></div>
+        <DaylightArc sunrise={data.daily.sunrise[todayIndex]} sunset={data.daily.sunset[todayIndex]} now={data.current.time}/>
+        <div className="sun-facts">
+          <div><Sunrise/><span>Sunrise</span><b>{timeLabel(data.daily.sunrise[todayIndex])}</b></div>
+          <div><Sunset/><span>Sunset</span><b>{timeLabel(data.daily.sunset[todayIndex])}</b></div>
+          <div><Umbrella/><span>Rain today</span><b>{data.daily.precipitation_sum[todayIndex]} mm</b></div>
+          <div><Eye/><span>UV index</span><b>{Math.round(data.daily.uv_index_max[todayIndex])}</b></div>
+          <div><Wind/><span>Max wind</span><b>{Math.round(data.daily.wind_speed_10m_max[todayIndex])} {speed}</b></div>
+          <div><Wind/><span>Gusts</span><b>{Math.round(data.daily.wind_gusts_10m_max[todayIndex])} {speed}</b></div>
+        </div>
+        <p className="sun-credit">Data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a></p>
       </aside>
     </div>
+    <div className="weather-range-controls"><div><p className="weather-kicker">METRIC DETAIL</p><h2 className="range-title">{rangeLabel} · every metric</h2></div><div className="range-toggle" role="group" aria-label="Forecast range"><button className={span===48?"active":""} onClick={()=>setSpan(48)}>48 HOURS</button><button className={span===168?"active":""} onClick={()=>setSpan(168)}>7 DAYS</button></div></div>
     <div className="weather-charts">
-      <WeatherChart title="Next 24 hours" subtitle="TEMPERATURE" format={(value)=>`${Math.round(value)}${unit}`}
-        xLabels={data.hourly.time.slice(currentHour,currentHour+24).filter((_,index)=>index%4===0).map((value)=>timeLabel(value))}
-        series={[
-          {name:"Air",color:"#3d8bfd",points:buildSeries(data.hourly.temperature_2m.slice(currentHour,currentHour+24))},
-          {name:"Feels like",color:"#ff9f43",points:buildSeries(data.hourly.apparent_temperature.slice(currentHour,currentHour+24))}
-        ]}/>
-      <WeatherChart title="Next 24 hours" subtitle="RAIN CHANCE" format={(value)=>`${Math.round(value)}%`}
-        xLabels={data.hourly.time.slice(currentHour,currentHour+24).filter((_,index)=>index%4===0).map((value)=>timeLabel(value))}
-        series={[{name:"Precipitation probability",color:"#39c5cf",points:buildSeries(data.hourly.precipitation_probability.slice(currentHour,currentHour+24))}]}/>
-      <WeatherChart title="Next 24 hours" subtitle="WIND SPEED" format={(value)=>`${Math.round(value)}`}
-        xLabels={data.hourly.time.slice(currentHour,currentHour+24).filter((_,index)=>index%4===0).map((value)=>timeLabel(value))}
-        series={[{name:"Wind",color:"#3fb950",points:buildSeries(data.hourly.wind_speed_10m.slice(currentHour,currentHour+24))}]}/>
-      <DailyRangeChart unit={unit} rainUnit="mm" days={data.daily.time.map((date,index)=>({date,max:data.daily.temperature_2m_max[index],min:data.daily.temperature_2m_min[index],rain:data.daily.precipitation_sum[index],probability:data.daily.precipitation_probability_max[index]}))}/>
+      <ChartCard title="Temperature" subtitle="AIR VS FEELS LIKE" summary={summary(slice(data.hourly.temperature_2m),tempFormatter)} scale={temperatureScale} kind="temperature" labels={labels} series={[{name:"Air",color:"#3d8bfd",points:toPoints(slice(data.hourly.temperature_2m))},{name:"Feels like",color:"#ff9f43",points:toPoints(slice(data.hourly.apparent_temperature))}]}>
+        <LineSeries series={[{name:"Air",color:"#3d8bfd",points:toPoints(slice(data.hourly.temperature_2m))},{name:"Feels like",color:"#ff9f43",points:toPoints(slice(data.hourly.apparent_temperature))}]} scale={temperatureScale}/>
+      </ChartCard>
+      <ChartCard title="Chance of rain" subtitle="PRECIPITATION PROBABILITY" summary={summary(slice(data.hourly.precipitation_probability),(v)=>`${Math.round(v)}%`)} scale={rainScale} kind="percent" labels={labels} series={[{name:"Rain chance",color:"#39c5cf",points:toPoints(slice(data.hourly.precipitation_probability))}]}>
+        <LineSeries series={[{name:"Rain chance",color:"#39c5cf",points:toPoints(slice(data.hourly.precipitation_probability))}]} scale={rainScale}/>
+      </ChartCard>
+      <ChartCard title="Rainfall" subtitle="PRECIPITATION · MM" summary={summary(slice(data.hourly.precipitation),(v)=>`${v.toFixed(1)} mm`)} scale={mmScale} kind="mm" labels={labels} series={[{name:"Rainfall",color:"#4a9eff",points:toPoints(slice(data.hourly.precipitation))}]}>
+        {barsFor(slice(data.hourly.precipitation),mmScale).map((bar,index)=><rect key={index} className="ts-bar" style={{fill:rainTint(bar.value)}} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={0.5}/>)}
+      </ChartCard>
+      <ChartCard title="Wind" subtitle="SPEED AND GUSTS" summary={summary(slice(data.hourly.wind_speed_10m),(v)=>`${Math.round(v)}`)} scale={windScale} kind="speed" labels={labels} series={[{name:"Wind",color:"#3fb950",points:toPoints(slice(data.hourly.wind_speed_10m))},{name:"Gusts",color:"#8f7cff",points:toPoints(slice(data.hourly.wind_gusts_10m))}]}>
+        <LineSeries series={[{name:"Wind",color:"#3fb950",points:toPoints(slice(data.hourly.wind_speed_10m))},{name:"Gusts",color:"#8f7cff",points:toPoints(slice(data.hourly.wind_gusts_10m))}]} scale={windScale}/>
+      </ChartCard>
+      <ChartCard title="Humidity" subtitle="RELATIVE HUMIDITY" summary={summary(slice(data.hourly.relative_humidity_2m),(v)=>`${Math.round(v)}%`)} scale={humidityScale} kind="percent" labels={labels} series={[{name:"Humidity",color:"#57b6c9",points:toPoints(slice(data.hourly.relative_humidity_2m))}]}>
+        <LineSeries series={[{name:"Humidity",color:"#57b6c9",points:toPoints(slice(data.hourly.relative_humidity_2m))}]} scale={humidityScale}/>
+      </ChartCard>
+      <ChartCard title="UV index" subtitle="ULTRAVIOLET · MAX PER HOUR" summary={summary(slice(data.hourly.uv_index),(v)=>v.toFixed(1))} scale={uvScale} kind="plain" labels={labels} series={[{name:"UV index",color:"#ffb547",points:toPoints(slice(data.hourly.uv_index))}]}>
+        {riskBands(uvScale,[{at:3,color:"#ffd16622"},{at:6,color:"#ff9f4322"},{at:8,color:"#ff6b6b22"},{at:11,color:"#d16bff22"}])}
+        <LineSeries series={[{name:"UV index",color:"#ffb547",points:toPoints(slice(data.hourly.uv_index))}]} scale={uvScale}/>
+      </ChartCard>
+    </div>
+    <div className="weather-range-controls"><div><p className="weather-kicker">DAILY OUTLOOK</p><h2 className="range-title">Seven days of highs, lows and rain</h2></div></div>
+    <div className="weather-charts">
+      <DailyRangeChart days={days} unit={unit} scale={dailyScale} labels={dailyLabels}/>
+      <ChartCard title="Daily rain chance" subtitle="7-DAY PROBABILITY" scale={dailyRainScale} kind="percent" labels={dailyLabels}>
+        {dailyRainBars.map((bar,index)=><rect key={index} className="ts-bar" style={{fill:bar.value>0?"#39c5cf":"#2c3a44"}} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={0.5}/>)}
+      </ChartCard>
+      <ChartCard title="Daily wind" subtitle="MAX SPEED AND GUSTS" scale={dailyWindScale} kind="speed" unit={speed} labels={dailyLabels} series={[{name:"Max wind",color:"#3fb950",points:toPoints(data.daily.wind_speed_10m_max)},{name:"Max gust",color:"#8f7cff",points:toPoints(data.daily.wind_gusts_10m_max)}]}>
+        <LineSeries series={[{name:"Max wind",color:"#3fb950",points:toPoints(data.daily.wind_speed_10m_max)},{name:"Max gust",color:"#8f7cff",points:toPoints(data.daily.wind_gusts_10m_max)}]} scale={dailyWindScale}/>
+      </ChartCard>
+      <ChartCard title="Total rainfall" subtitle="DAILY MM" scale={dailyMmScale} kind="mm" labels={dailyLabels} series={[{name:"Rainfall",color:"#4a9eff",points:toPoints(data.daily.precipitation_sum)}]}>
+        {dailyMmBars.map((bar,index)=><rect key={index} className="ts-bar" style={{fill:rainTint(bar.value)}} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={0.5}/>)}
+      </ChartCard>
     </div>
   </section>;
 }
