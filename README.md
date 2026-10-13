@@ -62,6 +62,8 @@ Package visibility is also a web-UI-only setting; the REST API has no endpoint f
 
 On TrueNAS, authenticate the registry before deploying, through **Apps → Settings → Docker Hub/Registry** or by running `docker login ghcr.io` on the host, then paste the compose file into the custom app entry. The image also carries a `HEALTHCHECK`, so the app reports healthy on its own even when the platform does not supply one.
 
+The data directory must be writable by **uid 1000**, which is the user the image runs as. Point a bind mount at a dataset and either `chown 1000:1000` it or grant write access in Dataset Permissions. Without that the app still starts, but `/api/health` reports `degraded` with HTTP 503, the container shows **unhealthy**, and dashboard routes return an error naming the directory and the uid to chown it.
+
 ### Local development
 
 ```bash
@@ -222,7 +224,7 @@ Alongside the hourly strip and seven-day outlook, the view plots a 24-hour tempe
 
 | Method | Route | Description |
 | --- | --- | --- |
-| `GET` | `/api/health` | Container health |
+| `GET` | `/api/health` | Liveness, including a writable check on the data directory |
 | `GET` | `/api/dashboards` | Dashboard summaries |
 | `GET` | `/api/dashboards/:id` | Full JSON definition |
 | `PUT` | `/api/dashboards/:id` | Validate and save a definition |

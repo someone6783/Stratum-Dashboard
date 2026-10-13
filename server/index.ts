@@ -1,5 +1,5 @@
 import express from "express";
-import { promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -162,7 +162,14 @@ async function renderPublished(dashboard: Dashboard) {
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: "256kb" }));
-  app.get("/api/health", (_request, response) => response.json({ status: "ok" }));
+  app.get("/api/health", async (_request, response) => {
+    try {
+      await fs.access(dataDir, fsConstants.W_OK);
+      response.json({ status: "ok", store: "writable" });
+    } catch {
+      response.status(503).json({ status: "degraded", store: "data directory is not writable", dataDir });
+    }
+  });
   app.get("/api/config", (_request, response) => response.json({ embedOrigins, prometheus: { configured: prometheus.configured, url: process.env.PROMETHEUS_URL ?? null } }));
   app.get("/api/release", async (_request, response, next) => { try { response.json({ release: await readRelease() }); } catch (error) { next(error); } });
   app.get("/api/prometheus/query", async (request, response, next) => {
@@ -193,7 +200,16 @@ export function createApp() {
   const dist = path.join(root, "dist");
   app.use(express.static(dist));
   app.use((request, response, next) => request.method === "GET" && !request.path.startsWith("/api/") ? response.sendFile(path.join(dist, "index.html"), (error) => error ? next() : undefined) : next());
-  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => { console.error(error); response.status(500).json({ error: "The dashboard store is temporarily unavailable" }); });
+  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    console.error(error);
+    const code = (error as NodeJS.ErrnoException)?.code;
+    const permissions = code === "EACCES" || code === "EPERM" || code === "EROFS";
+    response.status(500).json({
+      error: permissions
+        ? `The data directory ${dataDir} is not writable by uid ${process.getuid?.() ?? 1000}. Chown it to that user.`
+        : "The dashboard store is temporarily unavailable"
+    });
+  });
   return app;
 }
 
